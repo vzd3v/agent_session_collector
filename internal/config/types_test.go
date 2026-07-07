@@ -307,6 +307,26 @@ func TestHubValidationRejectsInvalidArchiveRanges(t *testing.T) {
 	}
 }
 
+func TestHubValidationRequiresVLEndpointWhenEnabled(t *testing.T) {
+	cfg := validHubConfig()
+	cfg.Index.EmitVLEvents = true
+	cfg.Index.VLEndpoint = ""
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "index.vl_endpoint is required") {
+		t.Fatalf("expected vl endpoint error, got %v", err)
+	}
+}
+
+func TestHubValidationRejectsInvalidVLEndpoint(t *testing.T) {
+	cfg := validHubConfig()
+	cfg.Index.EmitVLEvents = true
+	cfg.Index.VLEndpoint = "unix:///tmp/vl.sock"
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "http or https URL") {
+		t.Fatalf("expected invalid vl endpoint error, got %v", err)
+	}
+}
+
 func TestHubValidationRejectsRelativeRoot(t *testing.T) {
 	cfg := validHubConfig()
 	cfg.Paths.Root = "relative/root"

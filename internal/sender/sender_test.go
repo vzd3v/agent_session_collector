@@ -274,8 +274,8 @@ func TestFixtureScanReportsPeakRSS(t *testing.T) {
 		t.Fatalf("getrusage: %v", err)
 	}
 	t.Logf("fixture_scan_peak_rss_kb=%d files=%d", usage.Maxrss, len(files))
-	if len(files) != 3 {
-		t.Fatalf("fixture files=%d, want 3", len(files))
+	if len(files) != 4 {
+		t.Fatalf("fixture files=%d, want 4", len(files))
 	}
 }
 

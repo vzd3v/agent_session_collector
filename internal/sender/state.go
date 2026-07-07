@@ -9,8 +9,6 @@ import (
 	"time"
 
 	"github.com/vzd3v/agent_session_collector/internal/schema"
-
-	_ "modernc.org/sqlite"
 )
 
 type stateStore struct {

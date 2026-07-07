@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"math"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -362,6 +363,15 @@ func (cfg HubAppConfig) Validate() error {
 	}
 	if cfg.Index.Interval.Duration <= 0 {
 		return fmt.Errorf("index.interval must be positive")
+	}
+	if cfg.Index.EmitVLEvents && strings.TrimSpace(cfg.Index.VLEndpoint) == "" {
+		return fmt.Errorf("index.vl_endpoint is required when index.emit_vl_events is true")
+	}
+	if cfg.Index.EmitVLEvents {
+		parsed, err := url.Parse(cfg.Index.VLEndpoint)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			return fmt.Errorf("index.vl_endpoint must be an http or https URL")
+		}
 	}
 	if cfg.Index.EmitOnUnchangedEvery.Duration < 0 {
 		return fmt.Errorf("index.emit_on_unchanged_every must be non-negative")

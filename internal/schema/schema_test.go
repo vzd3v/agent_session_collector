@@ -6,8 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	_ "modernc.org/sqlite"
 )
 
 func TestApplySchemasOnEmptyDB(t *testing.T) {

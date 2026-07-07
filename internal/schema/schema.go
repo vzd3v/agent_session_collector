@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"path"
 	"sort"
+
+	_ "modernc.org/sqlite"
 )
 
 //go:embed migrations/*/*.sql
