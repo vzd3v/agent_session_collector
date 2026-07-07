@@ -104,7 +104,12 @@ PRIMARY KEY (target, version)
 
 func sqliteDSN(path string, readOnly bool) string {
 	values := url.Values{}
-	values.Set("_pragma", "foreign_keys(1)")
+	values.Add("_pragma", "foreign_keys(1)")
+	values.Add("_pragma", "busy_timeout(10000)")
+	if !readOnly && path != ":memory:" {
+		values.Add("_pragma", "journal_mode(WAL)")
+		values.Add("_pragma", "synchronous(NORMAL)")
+	}
 	if readOnly {
 		values.Set("mode", "ro")
 	}

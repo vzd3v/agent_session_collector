@@ -82,6 +82,30 @@ func TestOpenEnablesForeignKeysAcrossPooledConnections(t *testing.T) {
 	}
 }
 
+func TestOpenConfiguresSQLiteConcurrencyPragmas(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "sessions.sqlite"))
+	if err != nil {
+		t.Fatalf("open schema db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	var busyTimeout int
+	if err := db.QueryRow(`PRAGMA busy_timeout`).Scan(&busyTimeout); err != nil {
+		t.Fatalf("read busy_timeout pragma: %v", err)
+	}
+	if busyTimeout != 10000 {
+		t.Fatalf("busy_timeout pragma = %d, want 10000", busyTimeout)
+	}
+
+	var journalMode string
+	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&journalMode); err != nil {
+		t.Fatalf("read journal_mode pragma: %v", err)
+	}
+	if journalMode != "wal" {
+		t.Fatalf("journal_mode pragma = %q, want wal", journalMode)
+	}
+}
+
 func TestApplySchemasOnExistingDBFixtures(t *testing.T) {
 	tests := []struct {
 		name    string
