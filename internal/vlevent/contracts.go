@@ -6,6 +6,7 @@ type AgentSessionIndex struct {
 	EventName      string    `json:"event.name"`
 	ServiceName    string    `json:"service.name"`
 	Agent          string    `json:"agent"`
+	SenderID       string    `json:"sender.id"`
 	HostName       string    `json:"host.name,omitempty"`
 	OSUser         string    `json:"os.user,omitempty"`
 	Env            string    `json:"env,omitempty"`

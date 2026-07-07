@@ -19,7 +19,7 @@ CREATE TABLE sessions (
   last_index_event_at TEXT NOT NULL DEFAULT ''
 );
 
-CREATE UNIQUE INDEX sessions_agent_sender_user_session_idx
+CREATE INDEX sessions_agent_sender_user_session_idx
   ON sessions(agent, sender, user, session_id);
 CREATE INDEX sessions_archive_status_idx ON sessions(archive_status);
 CREATE INDEX sessions_last_seen_at_idx ON sessions(last_seen_at);

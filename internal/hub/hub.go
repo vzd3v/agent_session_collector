@@ -3,7 +3,9 @@ package hub
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -322,6 +324,7 @@ func buildEvent(file mirrorFile, runID string) vlevent.AgentSessionIndex {
 		EventName:      "agent_session_index",
 		ServiceName:    serviceName,
 		Agent:          file.Agent,
+		SenderID:       file.Sender,
 		OSUser:         file.User,
 		SessionID:      file.SessionID,
 		ConversationID: file.ConversationID,
@@ -334,7 +337,8 @@ func buildEvent(file mirrorFile, runID string) vlevent.AgentSessionIndex {
 }
 
 func buildSessionKey(file mirrorFile) string {
-	return strings.Join([]string{file.Agent, file.Sender, file.User, file.SessionID}, ":")
+	pathHash := sha256.Sum256([]byte(file.MirrorPath))
+	return strings.Join([]string{file.Agent, file.Sender, file.User, file.SessionID, hex.EncodeToString(pathHash[:8])}, ":")
 }
 
 func emitEvents(ctx context.Context, cfg config.HubAppConfig, client *http.Client, events []pendingEvent) error {

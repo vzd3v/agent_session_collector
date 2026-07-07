@@ -70,6 +70,32 @@ func TestIndexCatalogRowsForClaudeAndCodex(t *testing.T) {
 	}
 }
 
+func TestIndexKeepsDistinctFilesWithSameSessionID(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testHubConfig(tmp)
+	writeMirrorFile(t, cfg, "operator/claude/projects/project-a/claude-session-0001.jsonl", "claude-a\n")
+	writeMirrorFile(t, cfg, "operator/claude/projects/project-b/claude-session-0001.jsonl", "claude-b\n")
+
+	result, err := Index(context.Background(), cfg, Options{Now: func() time.Time {
+		return time.Date(2026, 7, 7, 18, 0, 0, 0, time.UTC)
+	}})
+	if err != nil {
+		t.Fatalf("Index returned error: %v", err)
+	}
+	if result.Scanned != 2 || result.Upserted != 2 {
+		t.Fatalf("result = %#v", result)
+	}
+
+	db := openCatalog(t, cfg.Paths.Catalog)
+	var count int
+	if err := db.QueryRow(`SELECT count(*) FROM sessions WHERE sender = 'sender-alpha' AND user = 'operator' AND agent = 'claude' AND session_id = 'claude-session-0001'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("duplicate session_id rows = %d, want 2", count)
+	}
+}
+
 func TestIndexEmitsVLForChangedAndHeartbeatOnly(t *testing.T) {
 	tmp := t.TempDir()
 	var received []vlevent.AgentSessionIndex
@@ -95,7 +121,7 @@ func TestIndexEmitsVLForChangedAndHeartbeatOnly(t *testing.T) {
 				http.Error(w, "unexpected sync status", http.StatusInternalServerError)
 				return
 			}
-			if event.SessionID == "" || event.FileSizeBytes == 0 || event.CollectorRunID == "" {
+			if event.SessionID == "" || event.SenderID == "" || event.FileSizeBytes == 0 || event.CollectorRunID == "" {
 				http.Error(w, "event missing required fields", http.StatusInternalServerError)
 				return
 			}
