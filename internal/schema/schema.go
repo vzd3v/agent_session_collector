@@ -27,7 +27,20 @@ type Migration struct {
 }
 
 func Open(path string) (*sql.DB, error) {
-	dsn := sqliteDSN(path)
+	dsn := sqliteDSN(path, false)
+	db, err := openSQLite(dsn)
+	if err != nil {
+		return nil, err
+	}
+	return db, nil
+}
+
+func OpenReadOnly(path string) (*sql.DB, error) {
+	dsn := sqliteDSN(path, true)
+	return openSQLite(dsn)
+}
+
+func openSQLite(dsn string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
@@ -87,9 +100,12 @@ PRIMARY KEY (target, version)
 	return nil
 }
 
-func sqliteDSN(path string) string {
+func sqliteDSN(path string, readOnly bool) string {
 	values := url.Values{}
 	values.Set("_pragma", "foreign_keys(1)")
+	if readOnly {
+		values.Set("mode", "ro")
+	}
 	if path == ":memory:" {
 		return path + "?" + values.Encode()
 	}

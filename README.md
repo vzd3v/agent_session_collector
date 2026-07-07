@@ -6,14 +6,13 @@ files. It is designed as timer-driven oneshot commands, not always-on daemons.
 ## Components
 
 - `asc-sender`: scans configured transcript directories and uploads changed
-  files in later phases.
+  files with rsync.
 - `asc-receive`: SSH forced-command gate for rsync receive in later phases.
 - `asc-hub`: indexes, emits session index events, and compacts archives in later
   phases.
 
-Phase 1 contains command skeletons, config contracts, SQLite schemas, data
-contracts, synthetic fixtures, and tests. Scanner, receive, indexer, and compact
-behavior are intentionally not implemented yet.
+The sender sync command is implemented. Receive, hub indexing, and compaction
+are implemented in later phases.
 
 ## Non-goals
 
@@ -43,6 +42,16 @@ CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" ./cmd/asc-hub
 Examples are in `examples/`. TOML parsing uses `github.com/BurntSushi/toml`
 with strict unknown-key checks. The parser decision is recorded in
 `docs/dev/decisions/2026-07-07-toml-parser.md`.
+
+### Sender Sync
+
+`asc-sender sync -config <path>` scans only `[[sources]].paths`, applies
+`[exclude].patterns`, considers regular `.jsonl` files only, and uploads changed
+files with rsync. The local SQLite state is `sync.state_path`; unchanged
+`(path, size, mtime)` entries are skipped.
+
+Use `asc-sender sync -config <path> -dry-run` to print the planned and skipped
+files without running rsync or updating sync state.
 
 ## Data Contracts
 

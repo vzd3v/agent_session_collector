@@ -4,7 +4,7 @@
 
 SQLite table `synced_files` records the last successfully uploaded identity for
 each source file. The skip key is `(source_path, size_bytes, mtime_unix_ns)`;
-state updates happen only after a successful upload in later phases.
+`asc-sender sync` updates state only after successful upload.
 
 Columns: `source_key`, `agent`, `user`, `source_path`, `session_id`,
 `size_bytes`, `mtime_unix_ns`, `last_synced_at`, `last_error`.
