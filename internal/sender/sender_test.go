@@ -52,6 +52,33 @@ func TestSyncSkipsUnchangedAfterSuccessfulUpload(t *testing.T) {
 	}
 }
 
+func TestSyncDoesNotMarkUploaderSkippedFiles(t *testing.T) {
+	cfg := testConfig(t)
+	writeJSONL(t, filepath.Join(cfg.Sources[0].Home, ".claude", "projects", "alpha", "claude-session-0001.jsonl"), "2026-07-07T00:00:00Z")
+	writeJSONL(t, filepath.Join(cfg.Sources[0].Home, ".claude", "projects", "beta", "claude-session-0002.jsonl"), "2026-07-07T00:00:00Z")
+
+	result, err := sender.Sync(context.Background(), cfg, sender.Options{
+		Uploader: skippingUploader{},
+		Sleeper:  noSleep,
+		Now:      fixedNow,
+	})
+	if err != nil {
+		t.Fatalf("sync with skipped upload: %v", err)
+	}
+	if result.Uploaded != 1 || result.Skipped != 1 {
+		t.Fatalf("sync result uploaded=%d skipped=%d, want 1/1", result.Uploaded, result.Skipped)
+	}
+
+	var out bytes.Buffer
+	result, err = sender.Sync(context.Background(), cfg, sender.Options{DryRun: true, Stdout: &out})
+	if err != nil {
+		t.Fatalf("dry-run after skipped upload: %v", err)
+	}
+	if result.Planned != 1 || result.Skipped != 1 {
+		t.Fatalf("dry-run planned=%d skipped=%d, want 1/1\n%s", result.Planned, result.Skipped, out.String())
+	}
+}
+
 func TestSyncPlansChangedFile(t *testing.T) {
 	cfg := testConfig(t)
 	path := filepath.Join(cfg.Sources[0].Home, ".claude", "projects", "alpha", "claude-session-0001.jsonl")
@@ -425,14 +452,26 @@ type fakeUploader struct {
 	uploads  [][]sender.File
 }
 
-func (u *fakeUploader) Upload(_ context.Context, files []sender.File) error {
+func (u *fakeUploader) Upload(_ context.Context, files []sender.File) (sender.UploadResult, error) {
 	u.attempts++
 	u.uploads = append(u.uploads, slices.Clone(files))
 	if u.failures > 0 {
 		u.failures--
-		return errors.New("transient upload failure")
+		return sender.UploadResult{}, errors.New("transient upload failure")
 	}
-	return nil
+	return sender.UploadResult{Uploaded: slices.Clone(files)}, nil
+}
+
+type skippingUploader struct{}
+
+func (skippingUploader) Upload(_ context.Context, files []sender.File) (sender.UploadResult, error) {
+	if len(files) == 0 {
+		return sender.UploadResult{}, nil
+	}
+	return sender.UploadResult{
+		Uploaded: slices.Clone(files[1:]),
+		Skipped:  slices.Clone(files[:1]),
+	}, nil
 }
 
 func testConfig(t *testing.T) config.SenderConfig {

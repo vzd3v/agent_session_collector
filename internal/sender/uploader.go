@@ -21,13 +21,17 @@ type RsyncUploader struct {
 	Stderr io.Writer
 }
 
-func (u RsyncUploader) Upload(ctx context.Context, files []File) error {
+// ErrSourceChanged means a source file mutated after scan and should be retried later.
+var ErrSourceChanged = errors.New("source changed since scan")
+
+func (u RsyncUploader) Upload(ctx context.Context, files []File) (UploadResult, error) {
+	result := UploadResult{}
 	if len(files) == 0 {
-		return nil
+		return result, nil
 	}
 	stage, err := os.MkdirTemp("", "asc-sender-stage-*")
 	if err != nil {
-		return fmt.Errorf("create rsync stage: %w", err)
+		return result, fmt.Errorf("create rsync stage: %w", err)
 	}
 	defer func() {
 		_ = os.RemoveAll(stage)
@@ -36,13 +40,21 @@ func (u RsyncUploader) Upload(ctx context.Context, files []File) error {
 	filesFrom := make([]string, 0, len(files))
 	for _, file := range files {
 		if err := stageFile(stage, file); err != nil {
-			return err
+			if errors.Is(err, ErrSourceChanged) {
+				result.Skipped = append(result.Skipped, file)
+				continue
+			}
+			return result, err
 		}
 		filesFrom = append(filesFrom, file.RemotePath)
+		result.Uploaded = append(result.Uploaded, file)
+	}
+	if len(filesFrom) == 0 {
+		return result, nil
 	}
 	listPath := filepath.Join(stage, ".asc-files-from")
 	if err := os.WriteFile(listPath, []byte(strings.Join(filesFrom, "\x00")+"\x00"), 0o600); err != nil {
-		return fmt.Errorf("write rsync files-from: %w", err)
+		return result, fmt.Errorf("write rsync files-from: %w", err)
 	}
 
 	profile := rsyncprofile.Profile{
@@ -59,9 +71,9 @@ func (u RsyncUploader) Upload(ctx context.Context, files []File) error {
 		if len(output) > 0 && u.Stderr != nil {
 			_, _ = u.Stderr.Write(output)
 		}
-		return fmt.Errorf("run rsync: %w", err)
+		return result, fmt.Errorf("run rsync: %w", err)
 	}
-	return nil
+	return result, nil
 }
 
 func stageFile(stage string, file File) error {
@@ -104,11 +116,11 @@ func copyRegularFile(file File, target string) error {
 	}
 	if file.Device != 0 || file.Inode != 0 {
 		if uint64(stat.Dev) != file.Device || stat.Ino != file.Inode {
-			return fmt.Errorf("source changed since scan")
+			return fmt.Errorf("%w: inode changed", ErrSourceChanged)
 		}
 	}
 	if file.SizeBytes != stat.Size || file.MtimeUnixNS != statMtimeUnixNS(stat) {
-		return fmt.Errorf("source changed since scan")
+		return fmt.Errorf("%w: metadata changed", ErrSourceChanged)
 	}
 	out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {

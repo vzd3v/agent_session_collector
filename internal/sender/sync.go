@@ -64,13 +64,15 @@ func Sync(ctx context.Context, cfg config.SenderConfig, opts Options) (Result, e
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
-	if err := uploadWithRetry(ctx, uploader, opts.Sleeper, cfg.Sync.MaxAttempts, cfg.Sync.Backoff.Duration, plan.Planned); err != nil {
+	uploadResult, err := uploadWithRetry(ctx, uploader, opts.Sleeper, cfg.Sync.MaxAttempts, cfg.Sync.Backoff.Duration, plan.Planned)
+	if err != nil {
 		return result, err
 	}
-	if err := store.markSynced(ctx, plan.Planned, opts.Now()); err != nil {
+	if err := store.markSynced(ctx, uploadResult.Uploaded, opts.Now()); err != nil {
 		return result, err
 	}
-	result.Uploaded = len(plan.Planned)
+	result.Uploaded = len(uploadResult.Uploaded)
+	result.Skipped += len(uploadResult.Skipped)
 	return result, nil
 }
 
@@ -86,22 +88,23 @@ func writeDryRun(w io.Writer, plan Plan) {
 	}
 }
 
-func uploadWithRetry(ctx context.Context, uploader Uploader, sleeper Sleeper, maxAttempts int, backoff time.Duration, files []File) error {
+func uploadWithRetry(ctx context.Context, uploader Uploader, sleeper Sleeper, maxAttempts int, backoff time.Duration, files []File) (UploadResult, error) {
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		if err := uploader.Upload(ctx, files); err != nil {
+		result, err := uploader.Upload(ctx, files)
+		if err != nil {
 			lastErr = err
 			if attempt == maxAttempts {
 				break
 			}
 			if err := sleeper(ctx, backoff); err != nil {
-				return fmt.Errorf("wait before rsync retry: %w", err)
+				return UploadResult{}, fmt.Errorf("wait before rsync retry: %w", err)
 			}
 			continue
 		}
-		return nil
+		return result, nil
 	}
-	return fmt.Errorf("upload failed after %d attempts: %w", maxAttempts, lastErr)
+	return UploadResult{}, fmt.Errorf("upload failed after %d attempts: %w", maxAttempts, lastErr)
 }
 
 func sleepContext(ctx context.Context, d time.Duration) error {

@@ -36,6 +36,11 @@ type Result struct {
 	DryRun   bool
 }
 
+type UploadResult struct {
+	Uploaded []File
+	Skipped  []File
+}
+
 type Options struct {
 	DryRun   bool
 	Stdout   io.Writer
@@ -45,7 +50,7 @@ type Options struct {
 }
 
 type Uploader interface {
-	Upload(context.Context, []File) error
+	Upload(context.Context, []File) (UploadResult, error)
 }
 
 type Sleeper func(context.Context, time.Duration) error
