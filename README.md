@@ -8,12 +8,10 @@ files. It is designed as timer-driven oneshot commands, not always-on daemons.
 - `asc-sender`: scans configured transcript directories and uploads changed
   files with rsync.
 - `asc-receive`: SSH forced-command gate for rsync receive.
-- `asc-hub`: indexes, emits session index events, and compacts archives in later
-  phases.
+- `asc-hub`: indexes, emits session index events, and compacts archives.
 
-The sender sync command and receive gate are implemented. Hub indexing and
-VL session index emission are implemented. Compaction is implemented in a later
-phase.
+The sender sync command, receive gate, hub indexing, VL session index emission,
+and compaction are implemented.
 
 ## Non-goals
 
@@ -67,8 +65,22 @@ configured sender mirror, and injects the configured receive-side max file size.
 SQLite catalog, and emits `agent_session_index` JSON Lines to
 `index.vl_endpoint` when `index.emit_vl_events = true`.
 
+`asc-hub compact -config <path>` archives quiet catalog rows with `zstd`,
+verifies the archive, updates the catalog, and optionally removes the plain
+mirror file after the configured retention window.
+
 `asc-hub doctor -config <path>` checks required local dependencies and hub paths
 without starting a resident process.
+
+### Archive Policy
+
+`archive.policy = "replace"` keeps one current archive per session. `versioned`
+keeps numbered archives and prunes old versions using
+`archive.version_retention` and `archive.version_retention_days`.
+
+When `retention.delete_mirror_after_archive = true`,
+`archive.retain_plain_after_archive = "0"` means delete the plain mirror file
+immediately after archive verification.
 
 ## Data Contracts
 

@@ -54,12 +54,15 @@ type mirrorFile struct {
 }
 
 type existingSession struct {
-	SessionKey        string
-	FirstSeenAt       string
-	LastIndexEventAt  string
-	LatestSizeBytes   int64
-	LatestMtimeUnixNS int64
-	LatestRawSHA256   string
+	SessionKey          string
+	FirstSeenAt         string
+	LastIndexEventAt    string
+	LatestSizeBytes     int64
+	LatestMtimeUnixNS   int64
+	LatestRawSHA256     string
+	ArchiveStatus       string
+	LatestArchivePath   string
+	LatestArchiveSHA256 string
 }
 
 type pendingEvent struct {
@@ -139,7 +142,8 @@ func Index(ctx context.Context, cfg config.HubAppConfig, opts Options) (IndexRes
 		if _, ok := emitted[sessionKey]; ok {
 			lastIndexEventAt = nowText
 		}
-		if err := upsertSession(ctx, db, file, sessionKey, firstSeenAt, nowText, lastIndexEventAt); err != nil {
+		archiveStatus, archivePath, archiveSHA256 := archiveStateForIndex(file, existing, found)
+		if err := upsertSession(ctx, db, file, sessionKey, firstSeenAt, nowText, lastIndexEventAt, archiveStatus, archivePath, archiveSHA256); err != nil {
 			return IndexResult{}, err
 		}
 		result.Upserted++
@@ -224,7 +228,7 @@ func parseMirrorPath(senderID, rel string) (mirrorFile, error) {
 
 func loadExistingSession(ctx context.Context, db *sql.DB, sessionKey string) (existingSession, bool, error) {
 	var existing existingSession
-	err := db.QueryRowContext(ctx, `SELECT session_key, first_seen_at, last_index_event_at, latest_size_bytes, latest_mtime_unix_ns, latest_raw_sha256
+	err := db.QueryRowContext(ctx, `SELECT session_key, first_seen_at, last_index_event_at, latest_size_bytes, latest_mtime_unix_ns, latest_raw_sha256, archive_status, latest_archive_path, latest_archive_sha256
 FROM sessions WHERE session_key = ?`, sessionKey).Scan(
 		&existing.SessionKey,
 		&existing.FirstSeenAt,
@@ -232,6 +236,9 @@ FROM sessions WHERE session_key = ?`, sessionKey).Scan(
 		&existing.LatestSizeBytes,
 		&existing.LatestMtimeUnixNS,
 		&existing.LatestRawSHA256,
+		&existing.ArchiveStatus,
+		&existing.LatestArchivePath,
+		&existing.LatestArchiveSHA256,
 	)
 	if err == nil {
 		return existing, true, nil
@@ -242,19 +249,32 @@ FROM sessions WHERE session_key = ?`, sessionKey).Scan(
 	return existingSession{}, false, fmt.Errorf("load existing session: %w", err)
 }
 
-func upsertSession(ctx context.Context, db *sql.DB, file mirrorFile, sessionKey string, firstSeenAt string, lastSeenAt string, lastIndexEventAt string) error {
+func archiveStateForIndex(file mirrorFile, existing existingSession, found bool) (status string, archivePath string, archiveSHA256 string) {
+	if found &&
+		existing.ArchiveStatus == constants.ArchiveStatusArchived &&
+		existing.LatestSizeBytes == file.SizeBytes &&
+		existing.LatestMtimeUnixNS == file.MtimeUnixNS &&
+		existing.LatestRawSHA256 == file.RawSHA256 {
+		return existing.ArchiveStatus, existing.LatestArchivePath, existing.LatestArchiveSHA256
+	}
+	return constants.ArchiveStatusHot, "", ""
+}
+
+func upsertSession(ctx context.Context, db *sql.DB, file mirrorFile, sessionKey string, firstSeenAt string, lastSeenAt string, lastIndexEventAt string, archiveStatus string, archivePath string, archiveSHA256 string) error {
 	_, err := db.ExecContext(ctx, `INSERT INTO sessions (
 session_key, agent, sender, user, env, host_name, session_id, conversation_id,
 mirror_path, latest_size_bytes, latest_mtime_unix_ns, latest_raw_sha256,
 archive_status, latest_archive_path, latest_archive_sha256, first_seen_at,
 last_seen_at, last_index_event_at
-) VALUES (?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?)
+) VALUES (?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(session_key) DO UPDATE SET
 mirror_path = excluded.mirror_path,
 latest_size_bytes = excluded.latest_size_bytes,
 latest_mtime_unix_ns = excluded.latest_mtime_unix_ns,
 latest_raw_sha256 = excluded.latest_raw_sha256,
 archive_status = excluded.archive_status,
+latest_archive_path = excluded.latest_archive_path,
+latest_archive_sha256 = excluded.latest_archive_sha256,
 last_seen_at = excluded.last_seen_at,
 last_index_event_at = excluded.last_index_event_at`,
 		sessionKey,
@@ -267,7 +287,9 @@ last_index_event_at = excluded.last_index_event_at`,
 		file.SizeBytes,
 		file.MtimeUnixNS,
 		file.RawSHA256,
-		archiveStatusHot,
+		archiveStatus,
+		archivePath,
+		archiveSHA256,
 		firstSeenAt,
 		lastSeenAt,
 		lastIndexEventAt,

@@ -15,6 +15,8 @@ import (
 
 var version = "dev"
 
+const helpExitCode = -1
+
 func main() {
 	os.Exit(run(os.Args, os.Stdout, os.Stderr))
 }
@@ -24,6 +26,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		switch args[1] {
 		case "index":
 			return runIndex(args[2:], stdout, stderr)
+		case "compact":
+			return runCompact(args[2:], stdout, stderr)
 		case "doctor":
 			return runDoctor(args[2:], stdout, stderr)
 		}
@@ -32,12 +36,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 		Name:     "asc-hub",
 		Version:  version,
 		Summary:  "index scans mirror files, updates catalog, and emits session index events",
-		Commands: []string{"index", "doctor", "version"},
+		Commands: []string{"index", "compact", "doctor", "version"},
 	})
 }
 
 func runIndex(args []string, stdout, stderr io.Writer) int {
 	cfg, code := loadHubCommandConfig("index", args, stderr)
+	if code == helpExitCode {
+		return 0
+	}
 	if code != 0 {
 		return code
 	}
@@ -50,8 +57,28 @@ func runIndex(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func runCompact(args []string, stdout, stderr io.Writer) int {
+	cfg, code := loadHubCommandConfig("compact", args, stderr)
+	if code == helpExitCode {
+		return 0
+	}
+	if code != 0 {
+		return code
+	}
+	result, err := hub.Compact(context.Background(), cfg, hub.CompactOptions{})
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "asc-hub compact: %v\n", err)
+		return 1
+	}
+	_, _ = fmt.Fprintf(stdout, "compact scanned=%d archived=%d deleted_mirror=%d\n", result.Scanned, result.Archived, result.DeletedMirror)
+	return 0
+}
+
 func runDoctor(args []string, stdout, stderr io.Writer) int {
 	cfg, code := loadHubCommandConfig("doctor", args, stderr)
+	if code == helpExitCode {
+		return 0
+	}
 	if code != 0 {
 		return code
 	}
@@ -74,7 +101,7 @@ func loadHubCommandConfig(command string, args []string, stderr io.Writer) (conf
 	configPath := fs.String("config", "", "hub TOML config path")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			return config.HubAppConfig{}, 0
+			return config.HubAppConfig{}, helpExitCode
 		}
 		return config.HubAppConfig{}, 2
 	}

@@ -16,6 +16,8 @@ Current coverage:
   safety behavior
 - receive forced-command parsing, rsync server-mode allowlist, mirror path
   confinement, and sender-profile compatibility
+- hub indexing, VL event retry/idempotency, zstd compaction, replace/versioned
+  archive policies, checksum mismatch guards, and mirror deletion retention
 
 Fixtures under `testdata/fixtures` are generated JSONL only. Tests fail if they
 contain known private deployment markers or omit `ASC_SYNTHETIC_FIXTURE`.

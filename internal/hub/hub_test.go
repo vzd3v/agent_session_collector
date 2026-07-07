@@ -260,7 +260,7 @@ func testHubConfig(root string) config.HubAppConfig {
 	}
 }
 
-func writeMirrorFile(t *testing.T, cfg config.HubAppConfig, rel string, body string) {
+func writeMirrorFile(t *testing.T, cfg config.HubAppConfig, rel string, body string) string {
 	t.Helper()
 	target := filepath.Join(cfg.Paths.Mirror, "sender-alpha", filepath.FromSlash(rel))
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
@@ -269,6 +269,7 @@ func writeMirrorFile(t *testing.T, cfg config.HubAppConfig, rel string, body str
 	if err := os.WriteFile(target, []byte(body), 0o640); err != nil {
 		t.Fatal(err)
 	}
+	return target
 }
 
 func openCatalog(t *testing.T, path string) *sql.DB {
