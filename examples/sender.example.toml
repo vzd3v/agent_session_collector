@@ -1,0 +1,43 @@
+sender_id = "sender-alpha"
+
+[hub]
+ssh_target = "upload_alpha@collector.example.net"
+remote_command = "asc-receive"
+
+[sync]
+interval = "10m"
+state_path = "/srv/apps/agent_session_collector/state/sender.sqlite"
+rsync_path = "/usr/bin/rsync"
+bandwidth_limit = ""
+max_attempts = 3
+backoff = "30s"
+
+[[sources]]
+agent = "claude"
+user = "operator"
+home = "/home/operator"
+host_name = "sender-alpha.example.net"
+data_class = "internal_agent_transcript"
+paths = [".claude/projects"]
+
+[[sources]]
+agent = "codex"
+user = "operator"
+home = "/home/operator"
+host_name = "sender-alpha.example.net"
+env = "sender-alpha/operator"
+data_class = "internal_agent_transcript"
+paths = [".codex/sessions", ".codex/archived_sessions"]
+
+[exclude]
+patterns = [
+  ".codex/auth.json",
+  ".codex/cache/**",
+  ".codex/*.sqlite*",
+  ".claude/paste-cache/**",
+  ".claude/file-history/**"
+]
+
+[logging]
+format = "json"
+level = "info"

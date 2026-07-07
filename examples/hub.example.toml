@@ -1,0 +1,49 @@
+hub_id = "collector-hub-alpha"
+
+[paths]
+root = "/srv/apps/agent_session_collector"
+mirror = "/srv/apps/agent_session_collector/data/mirror"
+archive = "/srv/apps/agent_session_collector/data/archive"
+catalog = "/srv/apps/agent_session_collector/data/catalog/sessions.sqlite"
+extracted = "/srv/apps/agent_session_collector/data/extracted"
+
+[receive]
+allow_delete = false
+max_file_size = "2GiB"
+unix_name_max_length = 32
+
+[[receive.sender]]
+sender_id = "sender-alpha"
+sender_slug = "sender-alpha"
+receive_user = "upload_alpha"
+mirror_group = "mirror_alpha"
+mirror = "sender-alpha"
+
+[data_classes.internal_agent_transcript]
+raw_hub_allowed = ["collector-hub-alpha"]
+redaction_required = false
+
+[index]
+interval = "10m"
+emit_vl_events = true
+vl_endpoint = "http://127.0.0.1:9428/insert/jsonline"
+emit_on_unchanged_every = "24h"
+
+[archive]
+enabled = true
+quiet_after = "24h"
+compression = "zstd"
+zstd_level = 6
+policy = "replace"
+retain_plain_after_archive = "48h"
+version_retention = 3
+version_retention_days = 30
+
+[retention]
+delete_mirror_after_archive = true
+delete_unknown_after = "0s"
+archive_retention_days = "0"
+
+[logging]
+format = "json"
+level = "info"

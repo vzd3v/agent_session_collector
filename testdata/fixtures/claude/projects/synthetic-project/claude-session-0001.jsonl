@@ -1,0 +1,2 @@
+{"fixture":"ASC_SYNTHETIC_FIXTURE","agent":"claude","session_id":"claude-session-0001","event":"session_started","message":"synthetic event with no real transcript content"}
+{"fixture":"ASC_SYNTHETIC_FIXTURE","agent":"claude","session_id":"claude-session-0001","event":"session_finished","message":"synthetic event with no real transcript content"}
