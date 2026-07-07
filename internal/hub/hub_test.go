@@ -96,6 +96,34 @@ func TestIndexKeepsDistinctFilesWithSameSessionID(t *testing.T) {
 	}
 }
 
+func TestIndexBackfillsCodexConversationIDOnExistingRow(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testHubConfig(tmp)
+	const sessionID = "00000000-0000-4000-8000-000000000001"
+	writeMirrorFile(t, cfg, "operator/codex/sessions/2026/07/07/rollout-2026-07-07T18-00-00-"+sessionID+".jsonl", "codex\n")
+
+	now := time.Date(2026, 7, 7, 18, 0, 0, 0, time.UTC)
+	if _, err := Index(context.Background(), cfg, Options{Now: func() time.Time { return now }}); err != nil {
+		t.Fatalf("first Index returned error: %v", err)
+	}
+
+	db := openCatalog(t, cfg.Paths.Catalog)
+	if _, err := db.Exec(`UPDATE sessions SET conversation_id = '' WHERE agent = 'codex'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Index(context.Background(), cfg, Options{Now: func() time.Time { return now.Add(time.Hour) }}); err != nil {
+		t.Fatalf("second Index returned error: %v", err)
+	}
+
+	var conversationID string
+	if err := db.QueryRow(`SELECT conversation_id FROM sessions WHERE agent = 'codex' AND session_id = ?`, sessionID).Scan(&conversationID); err != nil {
+		t.Fatal(err)
+	}
+	if conversationID != sessionID {
+		t.Fatalf("conversation_id = %q, want %q", conversationID, sessionID)
+	}
+}
+
 func TestIndexEmitsVLForChangedAndHeartbeatOnly(t *testing.T) {
 	tmp := t.TempDir()
 	var received []vlevent.AgentSessionIndex
