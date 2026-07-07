@@ -220,11 +220,16 @@ func parseMirrorPath(senderID, rel string) (mirrorFile, error) {
 	if err != nil {
 		return mirrorFile{}, err
 	}
+	conversationID := ""
+	if agent == constants.AgentCodex {
+		conversationID = sessionID
+	}
 	return mirrorFile{
-		Sender:    senderID,
-		User:      parts[0],
-		Agent:     agent,
-		SessionID: sessionID,
+		Sender:         senderID,
+		User:           parts[0],
+		Agent:          agent,
+		SessionID:      sessionID,
+		ConversationID: conversationID,
 	}, nil
 }
 

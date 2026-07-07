@@ -16,6 +16,9 @@ SQLite table `sessions` stores one current row per collected session.
 Identity fields: `session_key`, `agent`, `sender`, `user`, `env`, `host_name`,
 `session_id`, `conversation_id`.
 
+For Codex, `conversation_id` equals the UUID parsed from the transcript file
+name and matches Codex OTEL `conversation.id`.
+
 File fields: `mirror_path`, `latest_size_bytes`, `latest_mtime_unix_ns`,
 `latest_raw_sha256`, `archive_status`, `latest_archive_path`,
 `latest_archive_sha256`.
@@ -39,7 +42,9 @@ Required fields: `event.name`, `service.name`, `agent`, `session.id`,
 `file.size_bytes`, `file.mtime`, `archive.status`, `sync.status`,
 `collector.run_id`.
 
-Optional matching fields: `conversation.id`, `host.name`, `os.user`, `env`.
+Additional matching fields: `conversation.id`, `host.name`, `os.user`, `env`.
+
+For Codex index events, `conversation.id` is required and equals `session.id`.
 
 The event must not include transcript text, tool output, credentials, or raw
 user-home paths.

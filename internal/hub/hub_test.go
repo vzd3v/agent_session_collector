@@ -38,7 +38,7 @@ func TestIndexCatalogRowsForClaudeAndCodex(t *testing.T) {
 	}
 
 	db := openCatalog(t, cfg.Paths.Catalog)
-	rows, err := db.Query(`SELECT agent, sender, user, session_id, archive_status, mirror_path FROM sessions ORDER BY agent`)
+	rows, err := db.Query(`SELECT agent, sender, user, session_id, conversation_id, archive_status, mirror_path FROM sessions ORDER BY agent`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,21 +49,21 @@ func TestIndexCatalogRowsForClaudeAndCodex(t *testing.T) {
 	}()
 	var got []string
 	for rows.Next() {
-		var agent, sender, user, sessionID, archiveStatus, mirrorPath string
-		if err := rows.Scan(&agent, &sender, &user, &sessionID, &archiveStatus, &mirrorPath); err != nil {
+		var agent, sender, user, sessionID, conversationID, archiveStatus, mirrorPath string
+		if err := rows.Scan(&agent, &sender, &user, &sessionID, &conversationID, &archiveStatus, &mirrorPath); err != nil {
 			t.Fatal(err)
 		}
 		if strings.Contains(mirrorPath, "/home/") {
 			t.Fatalf("catalog mirror path contains raw home path: %s", mirrorPath)
 		}
-		got = append(got, strings.Join([]string{agent, sender, user, sessionID, archiveStatus}, "|"))
+		got = append(got, strings.Join([]string{agent, sender, user, sessionID, conversationID, archiveStatus}, "|"))
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
-		"claude|sender-alpha|operator|claude-session-0001|hot",
-		"codex|sender-alpha|operator|00000000-0000-4000-8000-000000000001|hot",
+		"claude|sender-alpha|operator|claude-session-0001||hot",
+		"codex|sender-alpha|operator|00000000-0000-4000-8000-000000000001|00000000-0000-4000-8000-000000000001|hot",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("rows = %#v, want %#v", got, want)
@@ -136,7 +136,7 @@ func TestIndexEmitsVLForChangedAndHeartbeatOnly(t *testing.T) {
 	cfg.Index.EmitVLEvents = true
 	cfg.Index.VLEndpoint = server.URL
 	cfg.Index.EmitOnUnchangedEvery = config.Duration{Duration: 24 * time.Hour}
-	writeMirrorFile(t, cfg, "operator/claude/projects/synthetic-project/claude-session-0001.jsonl", "claude\n")
+	writeMirrorFile(t, cfg, "operator/codex/sessions/2026/07/07/rollout-2026-07-07T18-00-00-00000000-0000-4000-8000-000000000001.jsonl", "codex\n")
 
 	now := time.Date(2026, 7, 7, 18, 0, 0, 0, time.UTC)
 	result, err := Index(context.Background(), cfg, Options{Now: func() time.Time { return now }, RunID: "run-1", HTTPClient: server.Client()})
@@ -145,6 +145,9 @@ func TestIndexEmitsVLForChangedAndHeartbeatOnly(t *testing.T) {
 	}
 	if result.EventsEmitted != 1 || receivedLen(&receivedMu, &received) != 1 {
 		t.Fatalf("first result=%#v received=%d", result, receivedLen(&receivedMu, &received))
+	}
+	if received[0].ConversationID != received[0].SessionID {
+		t.Fatalf("codex conversation_id = %q, want session_id %q", received[0].ConversationID, received[0].SessionID)
 	}
 
 	result, err = Index(context.Background(), cfg, Options{Now: func() time.Time { return now.Add(time.Hour) }, RunID: "run-2", HTTPClient: server.Client()})
