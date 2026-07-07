@@ -3,12 +3,14 @@ package cli
 import (
 	"fmt"
 	"io"
+	"strings"
 )
 
 type Skeleton struct {
-	Name    string
-	Version string
-	Summary string
+	Name     string
+	Version  string
+	Summary  string
+	Commands []string
 }
 
 func RunSkeleton(stdout, stderr io.Writer, args []string, cmd Skeleton) int {
@@ -17,7 +19,11 @@ func RunSkeleton(stdout, stderr io.Writer, args []string, cmd Skeleton) int {
 		case "version", "--version", "-v":
 			return writeExit(stdout, "%s %s\n", cmd.Name, cmd.Version)
 		case "help", "--help", "-h":
-			return writeExit(stdout, "Usage: %s <command>\n\n%s\n\nCommands:\n  version\n", cmd.Name, cmd.Summary)
+			commands := cmd.Commands
+			if len(commands) == 0 {
+				commands = []string{"version"}
+			}
+			return writeExit(stdout, "Usage: %s <command>\n\n%s\n\nCommands:\n  %s\n", cmd.Name, cmd.Summary, strings.Join(commands, "\n  "))
 		}
 	}
 
