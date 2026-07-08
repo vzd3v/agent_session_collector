@@ -63,12 +63,20 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 func printUsage(w io.Writer) {
-	_, _ = fmt.Fprintln(w, `Usage: asc-receive -config <hub.toml> -sender <sender_id>
+	_, _ = fmt.Fprintln(w, `Usage: asc-receive -config <hub.toml> -sender <sender_id> [-rsync-path <path>] [--server <rsync args>]
 
-SSH forced-command gate for rsync receive.
+SSH forced-command gate for receive-side rsync.
+
+Options:
+  -config       hub TOML config path
+  -sender       configured sender_id bound to this forced command
+  -rsync-path   rsync executable path on the hub; default /usr/bin/rsync
 
 Commands:
-  version`)
+  version
+
+AuthorizedKeys example:
+  command="/usr/local/bin/asc-receive -config /etc/agent-session-collector/hub.toml -sender sender-alpha",restrict ssh-ed25519 AAAA... sender-alpha`)
 }
 
 func splitServerArgs(args []string) ([]string, []string) {

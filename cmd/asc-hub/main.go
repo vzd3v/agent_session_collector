@@ -35,8 +35,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return cli.RunSkeleton(stdout, stderr, args, cli.Skeleton{
 		Name:     "asc-hub",
 		Version:  version,
-		Summary:  "index scans mirror files, updates catalog, and emits session index events",
+		Summary:  "Index mirrored session files, emit session-index metadata, compact quiet sessions, and run hub checks.",
+		Usage:    "asc-hub <command>",
 		Commands: []string{"index", "compact", "doctor", "version"},
+		Examples: []string{
+			"asc-hub doctor -config /etc/agent-session-collector/hub.toml",
+			"asc-hub index -config /etc/agent-session-collector/hub.toml",
+			"asc-hub compact -config /etc/agent-session-collector/hub.toml",
+		},
 	})
 }
 

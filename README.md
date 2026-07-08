@@ -1,88 +1,152 @@
 # agent_session_collector
 
-`agent_session_collector` is a Go collector for Claude and Codex session JSONL
-files. It is designed as timer-driven oneshot commands, not always-on daemons.
+`agent_session_collector` collects local AI-agent session transcripts from
+workstations or servers, mirrors them to a central host, indexes them, and
+optionally archives quiet sessions with zstd.
+
+It is built for fleets where Claude Code and OpenAI Codex CLI are used on many
+hosts and transcript files need to be available for later audit, debugging, or
+offline analysis. The default operating model is timer-driven oneshot commands:
+no sender daemon, no resident hub process, and no database server.
+
+## What It Does
+
+- Scans configured Claude and Codex JSONL transcript directories.
+- Uploads changed files to a hub with rsync over SSH.
+- Restricts hub-side rsync through an `asc-receive` forced command.
+- Maintains a SQLite catalog of sessions and archive state.
+- Emits lightweight `agent_session_index` JSON Lines to an HTTP log endpoint.
+- Compresses quiet sessions to `.jsonl.zst` with replace or versioned archive
+  policy.
+
+## What It Does Not Do
+
+- It does not redact transcript content.
+- It does not analyze prompts, tool output, or model responses.
+- It does not expose an API or UI.
+- It does not require Python, Postgres, Redis, or a queue.
+
+Transcripts can contain credentials, source code, customer data, and personal
+data. Treat the hub as sensitive infrastructure. See
+[docs/security-model.md](docs/security-model.md) before deploying.
 
 ## Components
 
-- `asc-sender`: scans configured transcript directories and uploads changed
-  files with rsync.
-- `asc-receive`: SSH forced-command gate for rsync receive.
-- `asc-hub`: indexes, emits session index events, and compacts archives.
+| Binary | Runs on | Purpose |
+| --- | --- | --- |
+| `asc-sender` | sender hosts | Scan transcript files, skip unchanged files, upload changed snapshots with rsync. |
+| `asc-receive` | hub host | SSH forced-command wrapper that validates sender identity and rsync server mode. |
+| `asc-hub` | hub host | Index mirror files, emit session-index events, compact quiet files, run health checks. |
 
-The sender sync command, receive gate, hub indexing, VL session index emission,
-and compaction are implemented.
+## Requirements
 
-## Non-goals
+- Go 1.26.4 or newer to build.
+- `rsync` on sender and hub hosts.
+- `zstd` on the hub when archive compaction is enabled.
+- SSH access from each sender to its dedicated hub receive account.
 
-- No transcript body analytics in the initial collector.
-- No redaction or content substitution in the raw archive path.
-- No always-on API or UI.
-- No Python runtime dependency.
-- No secrets or private deployment assumptions in this repository.
+Runtime state is stored in SQLite files:
 
-## Build
+- sender: `sync.state_path`
+- hub: `paths.catalog`
 
-```bash
-go test ./...
-go build ./cmd/asc-sender ./cmd/asc-receive ./cmd/asc-hub
-```
+## Quick Start
 
-Static release build shape:
+Build the binaries:
 
 ```bash
-CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" ./cmd/asc-sender
-CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" ./cmd/asc-receive
-CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" ./cmd/asc-hub
+make build
 ```
+
+Copy and edit the example configs:
+
+```bash
+cp examples/hub.example.toml /etc/agent-session-collector/hub.toml
+cp examples/sender.example.toml /etc/agent-session-collector/sender.toml
+```
+
+Validate the hub host:
+
+```bash
+asc-hub doctor -config /etc/agent-session-collector/hub.toml
+```
+
+Preview sender uploads without changing state:
+
+```bash
+asc-sender sync -config /etc/agent-session-collector/sender.toml -dry-run
+```
+
+Run one sender sync:
+
+```bash
+asc-sender sync -config /etc/agent-session-collector/sender.toml
+```
+
+Run one hub index and compaction pass:
+
+```bash
+asc-hub index -config /etc/agent-session-collector/hub.toml
+asc-hub compact -config /etc/agent-session-collector/hub.toml
+```
+
+For production, run these commands from systemd timers or your scheduler of
+choice. See [docs/deployment.md](docs/deployment.md).
 
 ## Configuration
 
-Examples are in `examples/`. TOML parsing uses `github.com/BurntSushi/toml`
-with strict unknown-key checks. The parser decision is recorded in
-`docs/dev/decisions/2026-07-07-toml-parser.md`.
+Configuration is TOML with strict unknown-key checks. See:
 
-### Sender Sync
+- [examples/sender.example.toml](examples/sender.example.toml)
+- [examples/hub.example.toml](examples/hub.example.toml)
+- [docs/configuration.md](docs/configuration.md)
 
-`asc-sender sync -config <path>` scans only `[[sources]].paths`, applies
-`[exclude].patterns`, considers regular `.jsonl` files only, and uploads changed
-files with rsync. The local SQLite state is `sync.state_path`; unchanged
-`(path, size, mtime)` entries are skipped.
+Durations use Go syntax such as `10m`, `24h`, and `0`. Byte sizes accept `B`,
+`KiB`, `MiB`, and `GiB`.
 
-Use `asc-sender sync -config <path> -dry-run` to print the planned and skipped
-files without running rsync or updating sync state.
+## Session Identity
 
-### Receive Gate
+The collector extracts session identity from transcript paths:
 
-Use `asc-receive -config <hub.toml> -sender <sender_id>` as an SSH
-forced-command. It reads `SSH_ORIGINAL_COMMAND`, accepts only the safe rsync
-server-mode profile generated by `asc-sender`, rewrites the destination to the
-configured sender mirror, and injects the configured receive-side max file size.
+- Claude: session ID from the JSONL filename under `.claude/projects`.
+- Codex: conversation UUID from `rollout-...-<uuid>.jsonl`.
 
-### Hub Index
+For Codex, the hub emits `conversation.id` equal to `session.id`, matching
+Codex OTEL conventions. See [docs/dev/data-contracts.md](docs/dev/data-contracts.md).
 
-`asc-hub index -config <path>` scans configured sender mirrors, upserts the
-SQLite catalog, and emits `agent_session_index` JSON Lines to
-`index.vl_endpoint` when `index.emit_vl_events = true`.
+## Archive Behavior
 
-`asc-hub compact -config <path>` archives quiet catalog rows with `zstd`,
-verifies the archive, updates the catalog, and optionally removes the plain
-mirror file after the configured retention window.
+The hub indexes mirror files first. A separate compaction pass archives sessions
+that have been quiet longer than `archive.quiet_after`.
 
-`asc-hub doctor -config <path>` checks required local dependencies and hub paths
-without starting a resident process.
+Recommended defaults:
 
-### Archive Policy
+- `archive.compression = "zstd"`
+- `archive.zstd_level = 6`
+- `archive.policy = "replace"`
+- `retention.delete_mirror_after_archive = true`
+- `archive.retain_plain_after_archive = "48h"`
 
-`archive.policy = "replace"` keeps one current archive per session. `versioned`
-keeps numbered archives and prunes old versions using
-`archive.version_retention` and `archive.version_retention_days`.
+This keeps recent quiet sessions readable as plain JSONL for a short window and
+then leaves a verified `.jsonl.zst` archive.
 
-When `retention.delete_mirror_after_archive = true`,
-`archive.retain_plain_after_archive = "0"` means delete the plain mirror file
-immediately after archive verification.
+## Development
 
-## Data Contracts
+```bash
+make test
+make lint
+make vulncheck
+```
 
-Contracts for sender state, hub catalog, archive state, and VictoriaLogs index
-events are in `docs/dev/data-contracts.md`.
+Synthetic fixtures live under `testdata/fixtures`. They must not contain real
+transcripts or private deployment markers.
+
+More details:
+
+- [CONTRIBUTING.md](CONTRIBUTING.md)
+- [docs/dev/testing.md](docs/dev/testing.md)
+- [docs/dev/data-contracts.md](docs/dev/data-contracts.md)
+
+## License
+
+MIT. See [LICENSE](LICENSE).

@@ -1,12 +1,12 @@
 sender_id = "sender-alpha"
 
 [hub]
-ssh_target = "upload_alpha@collector.example.net"
+ssh_target = "asc_upload_alpha@collector.example.net"
 remote_command = "asc-receive"
 
 [sync]
 interval = "10m"
-state_path = "/srv/apps/agent_session_collector/state/sender.sqlite"
+state_path = "/var/lib/agent-session-collector/sender.sqlite"
 rsync_path = "/usr/bin/rsync"
 bandwidth_limit = ""
 max_attempts = 3
@@ -14,19 +14,19 @@ backoff = "30s"
 
 [[sources]]
 agent = "claude"
-user = "operator"
-home = "/home/operator"
+user = "alice"
+home = "/home/alice"
 host_name = "sender-alpha.example.net"
-data_class = "internal_agent_transcript"
+data_class = "agent_transcript"
 paths = [".claude/projects"]
 
 [[sources]]
 agent = "codex"
-user = "operator"
-home = "/home/operator"
+user = "alice"
+home = "/home/alice"
 host_name = "sender-alpha.example.net"
-env = "sender-alpha/operator"
-data_class = "internal_agent_transcript"
+env = "sender-alpha/alice"
+data_class = "agent_transcript"
 paths = [".codex/sessions", ".codex/archived_sessions"]
 
 [exclude]

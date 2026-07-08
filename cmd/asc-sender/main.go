@@ -26,8 +26,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return cli.RunSkeleton(stdout, stderr, args, cli.Skeleton{
 		Name:     "asc-sender",
 		Version:  version,
-		Summary:  "sync scans configured transcript paths and uploads changed JSONL files",
+		Summary:  "Scan configured transcript paths and upload changed JSONL files to a hub over rsync/SSH.",
+		Usage:    "asc-sender <command>",
 		Commands: []string{"sync", "version"},
+		Examples: []string{
+			"asc-sender sync -config /etc/agent-session-collector/sender.toml -dry-run",
+			"asc-sender sync -config /etc/agent-session-collector/sender.toml",
+		},
 	})
 }
 

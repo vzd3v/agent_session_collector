@@ -41,6 +41,22 @@ func TestRunRequiresConfigAndSender(t *testing.T) {
 	}
 }
 
+func TestRunHelpDocumentsRsyncPath(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"asc-receive", "help"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d", code)
+	}
+	for _, want := range []string{"-config", "-sender", "-rsync-path", "AuthorizedKeys example"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout missing %q:\n%s", want, stdout.String())
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
 func TestSplitServerArgs(t *testing.T) {
 	prefix, direct := splitServerArgs([]string{"-config", "hub.toml", "-sender", "sender-alpha", "--server", "-trRe.iLsfxCIvu", ".", "/"})
 	if strings.Join(prefix, " ") != "-config hub.toml -sender sender-alpha" {
