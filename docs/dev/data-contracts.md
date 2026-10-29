@@ -11,19 +11,26 @@ Columns: `source_key`, `agent`, `user`, `source_path`, `session_id`,
 
 ## Hub Catalog
 
-SQLite table `sessions` stores one current row per collected session.
+SQLite table `sessions` stores one current row per collected artifact, including
+child transcripts and files with unresolved vendor identity.
 
 Identity fields: `session_key`, `agent`, `sender`, `user`, `env`, `host_name`,
 `session_id`, `conversation_id`.
 
 For Codex, `conversation_id` equals the UUID parsed from the transcript file
-name and matches Codex OTEL `conversation.id`.
+name and matches Codex OTEL `conversation.id`. Unrecognized JSONL filenames use a
+deterministic `artifact-<sha256-of-basename>` ID; their `conversation_id` is empty.
+Raw transport must not depend on vendor naming or content schema.
 
 File fields: `mirror_path`, `latest_size_bytes`, `latest_mtime_unix_ns`,
 `latest_raw_sha256`, `archive_status`, `latest_archive_path`,
 `latest_archive_sha256`.
 
-Timeline fields: `first_seen_at`, `last_seen_at`, `last_index_event_at`.
+Timeline fields: `first_seen_at`, `last_indexed_at`, `last_changed_at`,
+`last_index_event_at`. Indexing/heartbeat advances only `last_indexed_at` and
+event time. `last_changed_at` advances when the captured size/mtime/hash changes.
+It is observation time, not sender receipt time or developer activity. Migrated
+rows have unknown (`''`) change time until a real change is observed.
 
 ## Archive State
 
@@ -44,7 +51,9 @@ Required fields: `event.name`, `service.name`, `agent`, `session.id`,
 
 Additional matching fields: `conversation.id`, `host.name`, `os.user`, `env`.
 
-For Codex index events, `conversation.id` is required and equals `session.id`.
+For resolved Codex index events, `conversation.id` equals `session.id`; unresolved
+artifacts omit it. `file.changed` distinguishes a changed capture from a repeat
+index heartbeat; `file.changed_at` and `index.observed_at` separate their clocks.
 
 The event must not include transcript text, tool output, credentials, or raw
 user-home paths.

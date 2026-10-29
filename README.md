@@ -111,8 +111,13 @@ The collector extracts session identity from transcript paths:
 - Claude: session ID from the JSONL filename under `.claude/projects`.
 - Codex: conversation UUID from `rollout-...-<uuid>.jsonl`.
 
+Unknown JSONL names are still collected under opaque artifact IDs. They do not
+claim a vendor conversation ID and cannot block unrelated transcript delivery.
+
 For Codex, the hub emits `conversation.id` equal to `session.id`, matching
-Codex OTEL conventions. See [docs/dev/data-contracts.md](docs/dev/data-contracts.md).
+Codex OTEL conventions for recognized names. Catalog indexing time and captured
+artifact change time are separate; a heartbeat is not new delivery. See
+[docs/dev/data-contracts.md](docs/dev/data-contracts.md).
 
 ## Archive Behavior
 

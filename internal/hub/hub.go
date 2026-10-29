@@ -59,6 +59,7 @@ type existingSession struct {
 	SessionKey          string
 	FirstSeenAt         string
 	LastIndexEventAt    string
+	LastChangedAt       string
 	LatestSizeBytes     int64
 	LatestMtimeUnixNS   int64
 	LatestRawSHA256     string
@@ -108,15 +109,16 @@ func Index(ctx context.Context, cfg config.HubAppConfig, opts Options) (IndexRes
 		if err != nil {
 			return IndexResult{}, err
 		}
-		changed := !found ||
-			existing.LatestSizeBytes != file.SizeBytes ||
-			existing.LatestMtimeUnixNS != file.MtimeUnixNS ||
-			existing.LatestRawSHA256 != file.RawSHA256
+		changed := mirrorChanged(file, existing, found)
 		emit := shouldEmitIndexEvent(cfg, existing.LastIndexEventAt, changed, now)
 		if emit {
+			changedAt := existing.LastChangedAt
+			if changed {
+				changedAt = now.Format(time.RFC3339Nano)
+			}
 			events = append(events, pendingEvent{
 				sessionKey: sessionKey,
-				event:      buildEvent(file, runID),
+				event:      buildEvent(file, runID, changed, changedAt, now),
 			})
 		}
 	}
@@ -145,12 +147,21 @@ func Index(ctx context.Context, cfg config.HubAppConfig, opts Options) (IndexRes
 			lastIndexEventAt = nowText
 		}
 		archiveStatus, archivePath, archiveSHA256 := archiveStateForIndex(file, existing, found)
-		if err := upsertSession(ctx, db, file, sessionKey, firstSeenAt, nowText, lastIndexEventAt, archiveStatus, archivePath, archiveSHA256); err != nil {
+		changedAt := existing.LastChangedAt
+		if mirrorChanged(file, existing, found) {
+			changedAt = nowText
+		}
+		if err := upsertSession(ctx, db, file, sessionKey, firstSeenAt, nowText, changedAt, lastIndexEventAt, archiveStatus, archivePath, archiveSHA256); err != nil {
 			return IndexResult{}, err
 		}
 		result.Upserted++
 	}
 	return result, nil
+}
+
+func mirrorChanged(file mirrorFile, existing existingSession, found bool) bool {
+	return !found || existing.LatestSizeBytes != file.SizeBytes ||
+		existing.LatestMtimeUnixNS != file.MtimeUnixNS || existing.LatestRawSHA256 != file.RawSHA256
 }
 
 func scanMirror(cfg config.HubAppConfig) ([]mirrorFile, error) {
@@ -216,13 +227,16 @@ func parseMirrorPath(senderID, rel string) (mirrorFile, error) {
 	default:
 		return mirrorFile{}, fmt.Errorf("unsupported agent %q", agent)
 	}
-	sessionID, err := sessionid.FromPath(agent, strings.Join(parts[2:], "/"))
+	artifactPath := strings.Join(parts[2:], "/")
+	sessionID, err := sessionid.ForArtifact(agent, artifactPath)
 	if err != nil {
 		return mirrorFile{}, err
 	}
 	conversationID := ""
 	if agent == constants.AgentCodex {
-		conversationID = sessionID
+		if vendorID, vendorErr := sessionid.FromPath(agent, artifactPath); vendorErr == nil {
+			conversationID = vendorID
+		}
 	}
 	return mirrorFile{
 		Sender:         senderID,
@@ -235,11 +249,12 @@ func parseMirrorPath(senderID, rel string) (mirrorFile, error) {
 
 func loadExistingSession(ctx context.Context, db *sql.DB, sessionKey string) (existingSession, bool, error) {
 	var existing existingSession
-	err := db.QueryRowContext(ctx, `SELECT session_key, first_seen_at, last_index_event_at, latest_size_bytes, latest_mtime_unix_ns, latest_raw_sha256, archive_status, latest_archive_path, latest_archive_sha256
+	err := db.QueryRowContext(ctx, `SELECT session_key, first_seen_at, last_index_event_at, last_changed_at, latest_size_bytes, latest_mtime_unix_ns, latest_raw_sha256, archive_status, latest_archive_path, latest_archive_sha256
 FROM sessions WHERE session_key = ?`, sessionKey).Scan(
 		&existing.SessionKey,
 		&existing.FirstSeenAt,
 		&existing.LastIndexEventAt,
+		&existing.LastChangedAt,
 		&existing.LatestSizeBytes,
 		&existing.LatestMtimeUnixNS,
 		&existing.LatestRawSHA256,
@@ -267,13 +282,13 @@ func archiveStateForIndex(file mirrorFile, existing existingSession, found bool)
 	return constants.ArchiveStatusHot, "", ""
 }
 
-func upsertSession(ctx context.Context, db *sql.DB, file mirrorFile, sessionKey string, firstSeenAt string, lastSeenAt string, lastIndexEventAt string, archiveStatus string, archivePath string, archiveSHA256 string) error {
+func upsertSession(ctx context.Context, db *sql.DB, file mirrorFile, sessionKey string, firstSeenAt string, lastIndexedAt string, lastChangedAt string, lastIndexEventAt string, archiveStatus string, archivePath string, archiveSHA256 string) error {
 	_, err := db.ExecContext(ctx, `INSERT INTO sessions (
 session_key, agent, sender, user, env, host_name, session_id, conversation_id,
 mirror_path, latest_size_bytes, latest_mtime_unix_ns, latest_raw_sha256,
 archive_status, latest_archive_path, latest_archive_sha256, first_seen_at,
-last_seen_at, last_index_event_at
-) VALUES (?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+last_indexed_at, last_changed_at, last_index_event_at
+) VALUES (?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(session_key) DO UPDATE SET
 	conversation_id = excluded.conversation_id,
 	mirror_path = excluded.mirror_path,
@@ -283,7 +298,8 @@ ON CONFLICT(session_key) DO UPDATE SET
 	archive_status = excluded.archive_status,
 	latest_archive_path = excluded.latest_archive_path,
 	latest_archive_sha256 = excluded.latest_archive_sha256,
-	last_seen_at = excluded.last_seen_at,
+	last_indexed_at = excluded.last_indexed_at,
+	last_changed_at = excluded.last_changed_at,
 	last_index_event_at = excluded.last_index_event_at`,
 		sessionKey,
 		file.Agent,
@@ -299,7 +315,8 @@ ON CONFLICT(session_key) DO UPDATE SET
 		archivePath,
 		archiveSHA256,
 		firstSeenAt,
-		lastSeenAt,
+		lastIndexedAt,
+		lastChangedAt,
 		lastIndexEventAt,
 	)
 	if err != nil {
@@ -325,20 +342,23 @@ func shouldEmitIndexEvent(cfg config.HubAppConfig, lastIndexEventAt string, chan
 	return now.Sub(last) >= cfg.Index.EmitOnUnchangedEvery.Duration
 }
 
-func buildEvent(file mirrorFile, runID string) vlevent.AgentSessionIndex {
+func buildEvent(file mirrorFile, runID string, changed bool, changedAt string, observedAt time.Time) vlevent.AgentSessionIndex {
 	return vlevent.AgentSessionIndex{
-		EventName:      "agent_session_index",
-		ServiceName:    serviceName,
-		Agent:          file.Agent,
-		SenderID:       file.Sender,
-		OSUser:         file.User,
-		SessionID:      file.SessionID,
-		ConversationID: file.ConversationID,
-		FileSizeBytes:  file.SizeBytes,
-		FileMtime:      time.Unix(0, file.MtimeUnixNS).UTC(),
-		ArchiveStatus:  archiveStatusHot,
-		SyncStatus:     constants.SyncStatusMirrored,
-		CollectorRunID: runID,
+		EventName:       "agent_session_index",
+		ServiceName:     serviceName,
+		Agent:           file.Agent,
+		SenderID:        file.Sender,
+		OSUser:          file.User,
+		SessionID:       file.SessionID,
+		ConversationID:  file.ConversationID,
+		FileSizeBytes:   file.SizeBytes,
+		FileMtime:       time.Unix(0, file.MtimeUnixNS).UTC(),
+		ArchiveStatus:   archiveStatusHot,
+		SyncStatus:      constants.SyncStatusMirrored,
+		CollectorRunID:  runID,
+		FileChanged:     changed,
+		FileChangedAt:   changedAt,
+		IndexObservedAt: observedAt,
 	}
 }
 

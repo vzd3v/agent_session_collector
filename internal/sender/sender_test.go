@@ -52,6 +52,25 @@ func TestSyncSkipsUnchangedAfterSuccessfulUpload(t *testing.T) {
 	}
 }
 
+func TestSyncUnknownCodexNameDoesNotBlockOtherSources(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Sources = append(cfg.Sources, config.SourceConfig{
+		Agent: constants.AgentCodex, User: "operator", Home: cfg.Sources[0].Home,
+		HostName:  "sender-alpha.example.net",
+		DataClass: "internal_agent_transcript", Paths: []string{".codex/sessions"},
+	})
+	writeJSONL(t, filepath.Join(cfg.Sources[0].Home, ".claude/projects/alpha/known.jsonl"), "2026-07-07T00:00:00Z")
+	writeJSONL(t, filepath.Join(cfg.Sources[0].Home, ".codex/sessions/unrecognized.jsonl"), "2026-07-07T00:00:00Z")
+	result, err := sender.Sync(context.Background(), cfg, sender.Options{Uploader: &fakeUploader{}, Sleeper: noSleep})
+	if err != nil || result.Uploaded != 2 {
+		t.Fatalf("mixed-source delivery = %#v, %v", result, err)
+	}
+	result, err = sender.Sync(context.Background(), cfg, sender.Options{DryRun: true})
+	if err != nil || result.Skipped != 2 || result.Planned != 0 {
+		t.Fatalf("post-delivery plan = %#v, %v", result, err)
+	}
+}
+
 func TestSyncDoesNotMarkUploaderSkippedFiles(t *testing.T) {
 	cfg := testConfig(t)
 	writeJSONL(t, filepath.Join(cfg.Sources[0].Home, ".claude", "projects", "alpha", "claude-session-0001.jsonl"), "2026-07-07T00:00:00Z")

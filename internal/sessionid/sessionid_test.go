@@ -52,3 +52,18 @@ func TestFromPathRejectsInvalidCodexName(t *testing.T) {
 		t.Fatalf("expected ErrSessionIDMissing, got %v", err)
 	}
 }
+
+func TestOpaqueArtifactIdentityDoesNotGuessConversation(t *testing.T) {
+	name := "rollout-example-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee_11111111-2222-4333-8444-555555555555.jsonl"
+	left, err := ForArtifact(constants.AgentCodex, "sessions/"+name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := ForArtifact(constants.AgentCodex, ".codex/sessions/"+name)
+	if err != nil || left != right || len(left) != len("artifact-")+64 {
+		t.Fatalf("opaque IDs differ: %q %q %v", left, right, err)
+	}
+	if _, err := FromPath(constants.AgentCodex, name); !errors.Is(err, ErrSessionIDMissing) {
+		t.Fatalf("opaque artifact was treated as a conversation: %v", err)
+	}
+}

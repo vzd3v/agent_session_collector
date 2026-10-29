@@ -96,6 +96,24 @@ func TestIndexKeepsDistinctFilesWithSameSessionID(t *testing.T) {
 	}
 }
 
+func TestIndexRetainsUnresolvedCodexArtifact(t *testing.T) {
+	cfg := testHubConfig(t.TempDir())
+	writeMirrorFile(t, cfg, "operator/codex/sessions/unrecognized.jsonl", "opaque native data\n")
+	writeMirrorFile(t, cfg, "operator/claude/projects/alpha/known.jsonl", "claude\n")
+	result, err := Index(context.Background(), cfg, Options{})
+	if err != nil || result.Upserted != 2 {
+		t.Fatalf("mixed-artifact index = %#v, %v", result, err)
+	}
+	db := openCatalog(t, cfg.Paths.Catalog)
+	var artifactID, conversationID string
+	if err := db.QueryRow(`SELECT session_id,conversation_id FROM sessions WHERE agent='codex'`).Scan(&artifactID, &conversationID); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(artifactID, "artifact-") || conversationID != "" {
+		t.Fatalf("unresolved identity fabricated conversation: %q %q", artifactID, conversationID)
+	}
+}
+
 func TestIndexBackfillsCodexConversationIDOnExistingRow(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := testHubConfig(tmp)
@@ -192,6 +210,17 @@ func TestIndexEmitsVLForChangedAndHeartbeatOnly(t *testing.T) {
 	}
 	if result.EventsEmitted != 1 || receivedLen(&receivedMu, &received) != 2 {
 		t.Fatalf("third result=%#v received=%d", result, receivedLen(&receivedMu, &received))
+	}
+	if !received[0].FileChanged || received[1].FileChanged || received[0].FileChangedAt != received[1].FileChangedAt {
+		t.Fatalf("heartbeat changed artifact freshness: %#v", received)
+	}
+	db := openCatalog(t, cfg.Paths.Catalog)
+	var changedAt, indexedAt string
+	if err := db.QueryRow(`SELECT last_changed_at,last_indexed_at FROM sessions`).Scan(&changedAt, &indexedAt); err != nil {
+		t.Fatal(err)
+	}
+	if changedAt != now.Format(time.RFC3339Nano) || indexedAt != now.Add(25*time.Hour).Format(time.RFC3339Nano) {
+		t.Fatalf("changed=%q indexed=%q", changedAt, indexedAt)
 	}
 }
 

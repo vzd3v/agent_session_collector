@@ -40,7 +40,7 @@ func TestHubSchemaEnforcesArchiveCascade(t *testing.T) {
 	if _, err := db.Exec(`
 INSERT INTO sessions (
   session_key, agent, sender, user, session_id, mirror_path,
-  latest_size_bytes, latest_mtime_unix_ns, archive_status, first_seen_at, last_seen_at
+  latest_size_bytes, latest_mtime_unix_ns, archive_status, first_seen_at, last_indexed_at
 ) VALUES (
   'codex:sender-alpha:operator:aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
   'codex', 'sender-alpha', 'operator', 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
@@ -125,10 +125,28 @@ func TestApplySchemasOnExistingDBFixtures(t *testing.T) {
 			if _, err := db.Exec(string(sqlBody)); err != nil {
 				t.Fatalf("load fixture: %v", err)
 			}
+			if tc.target == Hub {
+				if _, err := db.Exec(`INSERT INTO sessions
+(session_key,agent,sender,user,session_id,mirror_path,latest_size_bytes,latest_mtime_unix_ns,archive_status,first_seen_at,last_seen_at)
+VALUES ('fixture','codex','sender-alpha','operator','fixture','fixture.jsonl',1,1,'hot','2026-01-01T00:00:00Z','2026-01-02T00:00:00Z')`); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if err := Apply(context.Background(), db, tc.target); err != nil {
 				t.Fatalf("apply existing schema: %v", err)
 			}
-			assertMigrationCount(t, db, tc.target, 1)
+			wantMigrations := 1
+			if tc.target == Hub {
+				wantMigrations = 2
+				var changedAt, indexedAt string
+				if err := db.QueryRow(`SELECT last_changed_at,last_indexed_at FROM sessions LIMIT 1`).Scan(&changedAt, &indexedAt); err != nil {
+					t.Fatal(err)
+				}
+				if changedAt != "" || indexedAt == "" {
+					t.Fatalf("migration fabricated freshness: changed=%q indexed=%q", changedAt, indexedAt)
+				}
+			}
+			assertMigrationCount(t, db, tc.target, wantMigrations)
 		})
 	}
 }

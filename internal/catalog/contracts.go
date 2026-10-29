@@ -19,7 +19,8 @@ type Session struct {
 	LatestArchivePath   string
 	LatestArchiveSHA256 string
 	FirstSeenAt         time.Time
-	LastSeenAt          time.Time
+	LastIndexedAt       time.Time
+	LastChangedAt       time.Time
 	LastIndexEventAt    time.Time
 }
 

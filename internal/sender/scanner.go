@@ -64,7 +64,7 @@ func Scan(cfg config.SenderConfig) ([]File, error) {
 				if !ok {
 					return fmt.Errorf("stat metadata unavailable for %s", localPath)
 				}
-				id, err := sessionid.FromPath(source.Agent, relHome)
+				id, err := sessionid.ForArtifact(source.Agent, relHome)
 				if err != nil {
 					return fmt.Errorf("extract session id from %s: %w", relHome, err)
 				}
