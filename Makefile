@@ -1,5 +1,6 @@
 GO ?= go
 GOFLAGS ?=
+GOVULNCHECK_VERSION ?= v1.9.0
 DIST_DIR ?= dist
 
 .PHONY: build test lint vulncheck clean
@@ -17,7 +18,7 @@ lint:
 	$(GO) vet $(GOFLAGS) ./...
 
 vulncheck:
-	govulncheck ./...
+	$(GO) run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 
 clean:
 	rm -rf $(DIST_DIR)

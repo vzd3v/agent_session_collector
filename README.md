@@ -40,7 +40,7 @@ data. Treat the hub as sensitive infrastructure. See
 
 ## Requirements
 
-- Go 1.26.4 or newer to build.
+- Go 1.27.3 or newer to build.
 - `rsync` on sender and hub hosts.
 - `zstd` on the hub when archive compaction is enabled.
 - SSH access from each sender to its dedicated hub receive account.

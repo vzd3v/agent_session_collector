@@ -137,13 +137,19 @@ VALUES ('fixture','codex','sender-alpha','operator','fixture','fixture.jsonl',1,
 			}
 			wantMigrations := 1
 			if tc.target == Hub {
-				wantMigrations = 2
+				wantMigrations = 3
 				var changedAt, indexedAt string
 				if err := db.QueryRow(`SELECT last_changed_at,last_indexed_at FROM sessions LIMIT 1`).Scan(&changedAt, &indexedAt); err != nil {
 					t.Fatal(err)
 				}
 				if changedAt != "" || indexedAt == "" {
 					t.Fatalf("migration fabricated freshness: changed=%q indexed=%q", changedAt, indexedAt)
+				}
+				if _, err := db.Exec(`INSERT INTO sessions
+(session_key,agent,sender,user,session_id,mirror_path,latest_size_bytes,latest_mtime_unix_ns,archive_status,first_seen_at,last_indexed_at)
+SELECT 'second-artifact',agent,sender,user,session_id,'second/fixture.jsonl',latest_size_bytes,latest_mtime_unix_ns,archive_status,first_seen_at,last_indexed_at
+FROM sessions WHERE session_key='fixture'`); err != nil {
+					t.Fatalf("upgraded catalog rejected distinct artifact with same vendor ID: %v", err)
 				}
 			}
 			assertMigrationCount(t, db, tc.target, wantMigrations)

@@ -5,6 +5,9 @@ more sender hosts.
 
 ## Build
 
+Use Go 1.27.3 or newer; run `make test lint vulncheck` before building.
+Install `rsync`, `zstd`, OpenSSH and `setfacl` (Debian/Ubuntu package `acl`).
+
 ```bash
 make build
 ```
@@ -27,7 +30,7 @@ install -m 0755 dist/asc-sender /usr/local/bin/asc-sender
 Create an application root owned by a dedicated hub user:
 
 ```bash
-useradd --system --home /var/lib/agent-session-collector --shell /usr/sbin/nologin asc-hub
+useradd --system --user-group --home /var/lib/agent-session-collector --shell /usr/sbin/nologin asc-hub
 install -d -o asc-hub -g asc-hub -m 0750 /var/lib/agent-session-collector
 install -d -o asc-hub -g asc-hub -m 0750 /var/lib/agent-session-collector/{mirror,archive,catalog,extracted}
 install -d -o root -g asc-hub -m 0750 /etc/agent-session-collector
@@ -42,7 +45,7 @@ install -m 0640 -o root -g asc-hub examples/hub.example.toml /etc/agent-session-
 Run:
 
 ```bash
-asc-hub doctor -config /etc/agent-session-collector/hub.toml
+sudo -u asc-hub asc-hub doctor -config /etc/agent-session-collector/hub.toml
 ```
 
 ## Receive Accounts
@@ -54,22 +57,51 @@ Example for `sender-alpha`:
 
 ```bash
 groupadd --system asc_mirror_alpha
-useradd --system --home /var/lib/agent-session-collector/receive/sender-alpha \
-  --shell /usr/sbin/nologin --groups asc_mirror_alpha asc_upload_alpha
+useradd --system --user-group --home /var/lib/agent-session-collector/receive/sender-alpha \
+  --shell /bin/sh --groups asc_mirror_alpha asc_upload_alpha
 
-install -d -o asc-hub -g asc_mirror_alpha -m 0770 \
+install -d -o asc_upload_alpha -g asc_mirror_alpha -m 0770 \
   /var/lib/agent-session-collector/mirror/sender-alpha
+install -d -o root -g root -m 0700 /var/lib/agent-session-collector/receive
 install -d -o asc_upload_alpha -g asc_upload_alpha -m 0700 \
   /var/lib/agent-session-collector/receive/sender-alpha/.ssh
+
+# Allow only traversal of shared ancestors, not reads of peer data.
+setfacl -m u:asc_upload_alpha:--x /var/lib/agent-session-collector \
+  /var/lib/agent-session-collector/mirror \
+  /var/lib/agent-session-collector/receive /etc/agent-session-collector
+
+# Separate receiver config: same paths and receive.sender set as hub.toml,
+# but no backend credentials; leave index emission disabled in this copy.
+install -m 0600 -o root -g root examples/hub.example.toml \
+  /etc/agent-session-collector/receive.toml
+setfacl -m u:asc_upload_alpha:r-- /etc/agent-session-collector/receive.toml
+
+# Hub jobs must create/delete inside nested receive-owned directories.
+setfacl -R -m u:asc-hub:rwX,o::--- \
+  /var/lib/agent-session-collector/mirror/sender-alpha
+setfacl -R -d -m u:asc-hub:rwx,o::--- \
+  /var/lib/agent-session-collector/mirror/sender-alpha
 ```
+
+For additional senders, edit the existing `receive.toml` rather than reinstalling
+the example, keep its paths/sender set synchronized with `hub.toml`, and add each
+receiver's read ACL. Grant no receiver access to the hub group, catalog or archive.
+Use a password-disabled account, dedicated keys only, and ensure sshd permits
+public-key authentication for the account. The login shell executes the forced
+command; it is not permission for unrestricted SSH.
 
 Add the sender public key to the receive account with a forced command:
 
 ```text
-command="/usr/local/bin/asc-receive -config /etc/agent-session-collector/hub.toml -sender sender-alpha",restrict ssh-ed25519 AAAA... sender-alpha
+command="/usr/local/bin/asc-receive -config /etc/agent-session-collector/receive.toml -sender sender-alpha",restrict ssh-ed25519 AAAA... sender-alpha
 ```
 
 Keep private keys on sender hosts only.
+Install `authorized_keys` with mode 0600, owned by its receive account. Verify
+traversal/config access as that account before testing a real sender sync; verify
+the hub user can create/delete a temporary file in a newly received subdirectory.
+Check that one receiver cannot read a peer mirror or the archive/catalog.
 
 ## Sender Layout
 
@@ -174,9 +206,9 @@ systemctl list-timers 'agent-session*' 'agent_session*'
 Hub:
 
 ```bash
-asc-hub doctor -config /etc/agent-session-collector/hub.toml
-asc-hub index -config /etc/agent-session-collector/hub.toml
-sqlite3 /var/lib/agent-session-collector/catalog/sessions.sqlite 'select agent, count(*) from sessions group by agent;'
+sudo -u asc-hub asc-hub doctor -config /etc/agent-session-collector/hub.toml
+sudo -u asc-hub asc-hub index -config /etc/agent-session-collector/hub.toml
+sudo -u asc-hub sqlite3 /var/lib/agent-session-collector/catalog/sessions.sqlite 'select agent, count(*) from sessions group by agent;'
 ```
 
 Archive integrity:

@@ -14,6 +14,11 @@ jobs:
       - name: Check out
         uses: actions/checkout@v4
 
+      - name: Install integration dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rsync zstd
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -25,3 +30,6 @@ jobs:
 
       - name: Vet
         run: go vet ./...
+
+      - name: Check vulnerabilities
+        run: make vulncheck

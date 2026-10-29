@@ -6,7 +6,7 @@ Thanks for improving `agent_session_collector`.
 
 Requirements:
 
-- Go 1.26.4 or newer
+- Go 1.27.3 or newer
 - `rsync` for receive/sender integration tests
 - `zstd` for archive tests and local compaction
 

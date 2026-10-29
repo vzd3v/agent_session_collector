@@ -21,6 +21,9 @@ For Codex, `conversation_id` equals the UUID parsed from the transcript file
 name and matches Codex OTEL `conversation.id`. Unrecognized JSONL filenames use a
 deterministic `artifact-<sha256-of-basename>` ID; their `conversation_id` is empty.
 Raw transport must not depend on vendor naming or content schema.
+The lookup on `(agent, sender, user, session_id)` is nonunique; path-qualified
+`session_key` is the artifact identity. Migration 003 removes obsolete uniqueness
+from existing catalogs without changing their session or archive rows.
 
 File fields: `mirror_path`, `latest_size_bytes`, `latest_mtime_unix_ns`,
 `latest_raw_sha256`, `archive_status`, `latest_archive_path`,
@@ -54,6 +57,8 @@ Additional matching fields: `conversation.id`, `host.name`, `os.user`, `env`.
 For resolved Codex index events, `conversation.id` equals `session.id`; unresolved
 artifacts omit it. `file.changed` distinguishes a changed capture from a repeat
 index heartbeat; `file.changed_at` and `index.observed_at` separate their clocks.
+`archive.status` reports the effective catalog state for that capture; an
+unchanged archived artifact stays archived in heartbeat events.
 
 The event must not include transcript text, tool output, credentials, or raw
 user-home paths.

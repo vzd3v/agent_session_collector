@@ -143,6 +143,7 @@ func TestIndexBackfillsCodexConversationIDOnExistingRow(t *testing.T) {
 }
 
 func TestIndexEmitsVLForChangedAndHeartbeatOnly(t *testing.T) {
+	requireZstd(t)
 	tmp := t.TempDir()
 	var received []vlevent.AgentSessionIndex
 	var receivedMu sync.Mutex
@@ -182,9 +183,10 @@ func TestIndexEmitsVLForChangedAndHeartbeatOnly(t *testing.T) {
 	cfg.Index.EmitVLEvents = true
 	cfg.Index.VLEndpoint = server.URL
 	cfg.Index.EmitOnUnchangedEvery = config.Duration{Duration: 24 * time.Hour}
-	writeMirrorFile(t, cfg, "operator/codex/sessions/2026/07/07/rollout-2026-07-07T18-00-00-00000000-0000-4000-8000-000000000001.jsonl", "codex\n")
+	mirrorPath := writeMirrorFile(t, cfg, "operator/codex/sessions/2026/07/07/rollout-2026-07-07T18-00-00-00000000-0000-4000-8000-000000000001.jsonl", "codex\n")
 
 	now := time.Date(2026, 7, 7, 18, 0, 0, 0, time.UTC)
+	setFileMtime(t, mirrorPath, now.Add(-25*time.Hour))
 	result, err := Index(context.Background(), cfg, Options{Now: func() time.Time { return now }, RunID: "run-1", HTTPClient: server.Client()})
 	if err != nil {
 		t.Fatalf("first Index returned error: %v", err)
@@ -203,6 +205,9 @@ func TestIndexEmitsVLForChangedAndHeartbeatOnly(t *testing.T) {
 	if result.EventsEmitted != 0 || receivedLen(&receivedMu, &received) != 1 {
 		t.Fatalf("second result=%#v received=%d", result, receivedLen(&receivedMu, &received))
 	}
+	if _, err := Compact(context.Background(), cfg, CompactOptions{Now: func() time.Time { return now.Add(2 * time.Hour) }}); err != nil {
+		t.Fatal(err)
+	}
 
 	result, err = Index(context.Background(), cfg, Options{Now: func() time.Time { return now.Add(25 * time.Hour) }, RunID: "run-3", HTTPClient: server.Client()})
 	if err != nil {
@@ -213,6 +218,9 @@ func TestIndexEmitsVLForChangedAndHeartbeatOnly(t *testing.T) {
 	}
 	if !received[0].FileChanged || received[1].FileChanged || received[0].FileChangedAt != received[1].FileChangedAt {
 		t.Fatalf("heartbeat changed artifact freshness: %#v", received)
+	}
+	if received[0].ArchiveStatus != constants.ArchiveStatusHot || received[1].ArchiveStatus != constants.ArchiveStatusArchived {
+		t.Fatalf("heartbeat archive state = %#v", received)
 	}
 	db := openCatalog(t, cfg.Paths.Catalog)
 	var changedAt, indexedAt string

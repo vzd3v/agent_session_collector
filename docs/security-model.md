@@ -19,7 +19,7 @@ Use one dedicated Unix receive account per sender. In `authorized_keys`, bind
 the sender key to `asc-receive` with an SSH forced command:
 
 ```text
-command="/usr/local/bin/asc-receive -config /etc/agent-session-collector/hub.toml -sender sender-alpha",restrict ssh-ed25519 AAAA... sender-alpha
+command="/usr/local/bin/asc-receive -config /etc/agent-session-collector/receive.toml -sender sender-alpha",restrict ssh-ed25519 AAAA... sender-alpha
 ```
 
 The forced command validates:
@@ -34,14 +34,18 @@ Keep private SSH keys on sender hosts only.
 
 Recommended ownership:
 
-- hub config: readable by the hub job user, not world-readable;
-- mirror directory: writable by the sender receive account and readable by the
-  hub job user;
+- hub config: readable by the hub job user, not world-readable; receive accounts
+  use a separate receiver-readable config without backend credentials;
+- mirror directory: writable by its sender receive account and the hub job
+  user, with access/default ACLs covering new subdirectories;
 - archive and catalog directories: writable only by the hub job user;
 - sender state database and SSH key: readable only by the sender job user.
 
-Do not give sender accounts shell access. Do not reuse collector receive
-accounts for other automation.
+Receive accounts need an executable login shell because sshd invokes forced
+commands with `shell -c`. Block unrestricted login through dedicated forced-command
+keys, disabled password authentication and no other authorized keys. Do not use
+`nologin`, grant the shared hub group, or reuse these accounts for other automation.
+See [the deployment ACL recipe](deployment.md#receive-accounts).
 
 ## Deletion and Retention
 

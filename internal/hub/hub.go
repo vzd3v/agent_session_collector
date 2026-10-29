@@ -26,10 +26,7 @@ import (
 	"github.com/vzd3v/agent_session_collector/internal/vlevent"
 )
 
-const (
-	archiveStatusHot = constants.ArchiveStatusHot
-	serviceName      = constants.ServiceName
-)
+const serviceName = constants.ServiceName
 
 type Options struct {
 	Now        func() time.Time
@@ -112,13 +109,14 @@ func Index(ctx context.Context, cfg config.HubAppConfig, opts Options) (IndexRes
 		changed := mirrorChanged(file, existing, found)
 		emit := shouldEmitIndexEvent(cfg, existing.LastIndexEventAt, changed, now)
 		if emit {
+			archiveStatus, _, _ := archiveStateForIndex(file, existing, found)
 			changedAt := existing.LastChangedAt
 			if changed {
 				changedAt = now.Format(time.RFC3339Nano)
 			}
 			events = append(events, pendingEvent{
 				sessionKey: sessionKey,
-				event:      buildEvent(file, runID, changed, changedAt, now),
+				event:      buildEvent(file, runID, archiveStatus, changed, changedAt, now),
 			})
 		}
 	}
@@ -342,7 +340,7 @@ func shouldEmitIndexEvent(cfg config.HubAppConfig, lastIndexEventAt string, chan
 	return now.Sub(last) >= cfg.Index.EmitOnUnchangedEvery.Duration
 }
 
-func buildEvent(file mirrorFile, runID string, changed bool, changedAt string, observedAt time.Time) vlevent.AgentSessionIndex {
+func buildEvent(file mirrorFile, runID, archiveStatus string, changed bool, changedAt string, observedAt time.Time) vlevent.AgentSessionIndex {
 	return vlevent.AgentSessionIndex{
 		EventName:       "agent_session_index",
 		ServiceName:     serviceName,
@@ -353,7 +351,7 @@ func buildEvent(file mirrorFile, runID string, changed bool, changedAt string, o
 		ConversationID:  file.ConversationID,
 		FileSizeBytes:   file.SizeBytes,
 		FileMtime:       time.Unix(0, file.MtimeUnixNS).UTC(),
-		ArchiveStatus:   archiveStatusHot,
+		ArchiveStatus:   archiveStatus,
 		SyncStatus:      constants.SyncStatusMirrored,
 		CollectorRunID:  runID,
 		FileChanged:     changed,

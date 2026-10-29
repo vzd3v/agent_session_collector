@@ -19,7 +19,7 @@ func ForArtifact(agent, path string) (string, error) {
 		return id, err
 	}
 	base := filepath.Base(path)
-	if !strings.HasSuffix(base, ".jsonl") || base == ".jsonl" {
+	if !strings.HasSuffix(base, ".jsonl") {
 		return "", ErrSessionIDMissing
 	}
 	sum := sha256.Sum256([]byte(base))
