@@ -5,6 +5,7 @@ ssh_target = "asc_upload_alpha@collector.example.net"
 remote_command = "asc-receive"
 
 [sync]
+max_staging_bytes = "512MiB"
 interval = "10m"
 state_path = "/var/lib/agent-session-collector/sender.sqlite"
 rsync_path = "/usr/bin/rsync"

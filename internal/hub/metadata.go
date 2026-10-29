@@ -18,6 +18,7 @@ import (
 	"github.com/vzd3v/agent_session_collector/internal/artifact"
 	"github.com/vzd3v/agent_session_collector/internal/checksum"
 	"github.com/vzd3v/agent_session_collector/internal/config"
+	"github.com/vzd3v/agent_session_collector/internal/diskspace"
 	"github.com/vzd3v/agent_session_collector/internal/nativeid"
 	sourceinfo "github.com/vzd3v/agent_session_collector/internal/source"
 )
@@ -352,7 +353,7 @@ func storeArtifactMetadata(ctx context.Context, db *sql.DB, file mirrorFile, key
 }
 
 // Archive sidecars are portable snapshots, separate from mutable current-source labels.
-func writeArchiveMetadata(ctx context.Context, db *sql.DB, key, archivePath string, now time.Time, provenance string) error {
+func writeArchiveMetadata(ctx context.Context, db *sql.DB, key, archivePath string, now time.Time, provenance string, minFree ...int64) error {
 	var sourceID, artifactID, relative, role, encoding, rawHash, physicalHash, nativeJSON, metadataJSON, host, env, class, sender, user, agent, sourceProvenance string
 	var rawSize, physicalSize int64
 	err := db.QueryRowContext(ctx, `SELECT source_id,artifact_id,relative_path,artifact_role,source_encoding,latest_raw_sha256,latest_physical_sha256,latest_raw_size_bytes,latest_size_bytes,identity_evidence_json,metadata_json,host_name,env,data_class,sender,user,agent,source_metadata_provenance FROM sessions WHERE session_key=?`, key).Scan(&sourceID, &artifactID, &relative, &role, &encoding, &rawHash, &physicalHash, &rawSize, &physicalSize, &nativeJSON, &metadataJSON, &host, &env, &class, &sender, &user, &agent, &sourceProvenance)
@@ -388,10 +389,20 @@ func writeArchiveMetadata(ctx context.Context, db *sql.DB, key, archivePath stri
 	}
 	// Existing snapshots keep their original provenance, even after source labels change.
 	name := archivePath + ".metadata.json"
-	if _, err := os.Lstat(name); err == nil {
+	if info, err := os.Lstat(name); err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("archive metadata snapshot is not regular")
+		}
 		return nil
 	} else if !os.IsNotExist(err) {
 		return err
+	}
+	floor := int64(0)
+	if len(minFree) > 0 {
+		floor = minFree[0]
+	}
+	if err := diskspace.Check(filepath.Dir(name), floor, int64(len(body))+1); err != nil {
+		return fmt.Errorf("archive metadata admission: %w", err)
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(name), ".asc-metadata-*")
 	if err != nil {

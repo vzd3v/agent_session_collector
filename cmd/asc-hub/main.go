@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -28,6 +29,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return runIndex(args[2:], stdout, stderr)
 		case "compact":
 			return runCompact(args[2:], stdout, stderr)
+		case "migrate":
+			return runMigrate(args[2:], stdout, stderr)
 		case "doctor":
 			return runDoctor(args[2:], stdout, stderr)
 		}
@@ -37,7 +40,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		Version:  version,
 		Summary:  "Index mirrored session files, emit session-index metadata, compact quiet sessions, and run hub checks.",
 		Usage:    "asc-hub <command>",
-		Commands: []string{"index", "compact", "doctor", "version"},
+		Commands: []string{"index", "compact", "migrate", "doctor", "version"},
 		Examples: []string{
 			"asc-hub doctor -config /etc/agent-session-collector/hub.toml",
 			"asc-hub index -config /etc/agent-session-collector/hub.toml",
@@ -64,19 +67,60 @@ func runIndex(args []string, stdout, stderr io.Writer) int {
 }
 
 func runCompact(args []string, stdout, stderr io.Writer) int {
-	cfg, code := loadHubCommandConfig("compact", args, stderr)
+	fs := flag.NewFlagSet("compact", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	configPath := fs.String("config", "", "hub TOML config path")
+	dryRun := fs.Bool("dry-run", false, "read-only retention plan; requires migrated catalog")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if *configPath == "" || fs.NArg() != 0 {
+		_, _ = fmt.Fprintln(stderr, "asc-hub compact: -config is required; positional arguments are not accepted")
+		return 2
+	}
+	cfg, loadErr := config.LoadHubFile(*configPath)
+	if loadErr != nil {
+		_, _ = fmt.Fprintf(stderr, "asc-hub compact: load config: %v\n", loadErr)
+		return 1
+	}
+	result, err := hub.Compact(context.Background(), cfg, hub.CompactOptions{DryRun: *dryRun})
+	if result.Plan != nil {
+		if *dryRun {
+			if encodeErr := json.NewEncoder(stdout).Encode(result.Plan); encodeErr != nil {
+				_, _ = fmt.Fprintf(stderr, "asc-hub compact: encode plan: %v\n", encodeErr)
+				return 1
+			}
+		} else {
+			_, _ = fmt.Fprintf(stdout, "retention archive_bytes=%d pressure_unsatisfied=%t\n", result.Plan.ArchiveBytes, result.Plan.PressureUnsatisfied)
+		}
+	}
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "asc-hub compact: %v\n", err)
+		return 1
+	}
+	if !*dryRun {
+		_, _ = fmt.Fprintf(stdout, "compact scanned=%d archived=%d deleted_mirror=%d\n", result.Scanned, result.Archived, result.DeletedMirror)
+	}
+	return 0
+}
+
+func runMigrate(args []string, stdout, stderr io.Writer) int {
+	cfg, code := loadHubCommandConfig("migrate", args, stderr)
 	if code == helpExitCode {
 		return 0
 	}
 	if code != 0 {
 		return code
 	}
-	result, err := hub.Compact(context.Background(), cfg, hub.CompactOptions{})
+	applied, err := hub.Migrate(context.Background(), cfg)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "asc-hub compact: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "asc-hub migrate: %v\n", err)
 		return 1
 	}
-	_, _ = fmt.Fprintf(stdout, "compact scanned=%d archived=%d deleted_mirror=%d\n", result.Scanned, result.Archived, result.DeletedMirror)
+	_, _ = fmt.Fprintf(stdout, "migrate applied=%d\n", applied)
 	return 0
 }
 
@@ -113,6 +157,10 @@ func loadHubCommandConfig(command string, args []string, stderr io.Writer) (conf
 	}
 	if *configPath == "" {
 		_, _ = fmt.Fprintf(stderr, "asc-hub %s: -config is required\n", command)
+		return config.HubAppConfig{}, 2
+	}
+	if fs.NArg() != 0 {
+		_, _ = fmt.Fprintf(stderr, "asc-hub %s: positional arguments are not accepted\n", command)
 		return config.HubAppConfig{}, 2
 	}
 	cfg, err := config.LoadHubFile(*configPath)

@@ -98,12 +98,13 @@ type HubConfig struct {
 }
 
 type SyncConfig struct {
-	Interval       Duration `toml:"interval"`
-	StatePath      string   `toml:"state_path"`
-	RsyncPath      string   `toml:"rsync_path"`
-	BandwidthLimit string   `toml:"bandwidth_limit"`
-	MaxAttempts    int      `toml:"max_attempts"`
-	Backoff        Duration `toml:"backoff"`
+	MaxStagingBytes ByteSize `toml:"max_staging_bytes"`
+	Interval        Duration `toml:"interval"`
+	StatePath       string   `toml:"state_path"`
+	RsyncPath       string   `toml:"rsync_path"`
+	BandwidthLimit  string   `toml:"bandwidth_limit"`
+	MaxAttempts     int      `toml:"max_attempts"`
+	Backoff         Duration `toml:"backoff"`
 }
 
 type SourceConfig struct {
@@ -195,9 +196,21 @@ type ArchiveConfig struct {
 }
 
 type RetentionConfig struct {
+	ArchiveMaxAge            Duration `toml:"archive_max_age"`
+	ArchiveMaxBytes          ByteSize `toml:"archive_max_bytes"`
+	MinFreeBytes             ByteSize `toml:"min_free_bytes"`
+	OrphanGrace              Duration `toml:"orphan_grace"`
 	DeleteMirrorAfterArchive bool     `toml:"delete_mirror_after_archive"`
 	DeleteUnknownAfter       Duration `toml:"delete_unknown_after"`
 	ArchiveRetentionDays     Duration `toml:"archive_retention_days"`
+}
+
+// StagingLimit is a batching target; an individual larger artifact travels alone.
+func (s SyncConfig) StagingLimit() int64 {
+	if s.MaxStagingBytes.Bytes > 0 {
+		return s.MaxStagingBytes.Bytes
+	}
+	return 512 * 1024 * 1024
 }
 
 func LoadSenderFile(path string) (SenderConfig, error) {
@@ -225,6 +238,9 @@ func LoadHubFile(path string) (HubAppConfig, error) {
 }
 
 func (cfg SenderConfig) Validate() error {
+	if cfg.Sync.MaxStagingBytes.Bytes < 0 {
+		return fmt.Errorf("sync.max_staging_bytes must be non-negative")
+	}
 	if cfg.SenderID == "" {
 		return fmt.Errorf("sender_id is required")
 	}
@@ -333,6 +349,9 @@ func (s SourceConfig) IndexPath() (string, error) {
 }
 
 func (cfg HubAppConfig) Validate() error {
+	if cfg.Retention.ArchiveMaxAge.Duration < 0 || cfg.Retention.OrphanGrace.Duration < 0 || cfg.Retention.ArchiveMaxBytes.Bytes < 0 || cfg.Retention.MinFreeBytes.Bytes < 0 {
+		return fmt.Errorf("retention limits must be non-negative")
+	}
 	if cfg.HubID == "" {
 		return fmt.Errorf("hub_id is required")
 	}
@@ -439,6 +458,9 @@ func (cfg HubAppConfig) Validate() error {
 	}
 	if cfg.Archive.VersionRetention < 0 || cfg.Archive.VersionRetentionDays < 0 {
 		return fmt.Errorf("archive version retention values must be non-negative")
+	}
+	if cfg.Retention.DeleteUnknownAfter.Duration != 0 || cfg.Retention.ArchiveRetentionDays.Duration != 0 {
+		return fmt.Errorf("retention.delete_unknown_after and archive_retention_days are reserved; use archive_max_age and orphan_grace")
 	}
 	return nil
 }

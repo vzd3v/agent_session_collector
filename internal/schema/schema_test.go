@@ -137,7 +137,7 @@ VALUES ('fixture','codex','sender-alpha','operator','fixture','fixture.jsonl',1,
 			}
 			wantMigrations := 2
 			if tc.target == Hub {
-				wantMigrations = 4
+				wantMigrations = 5
 				var changedAt, indexedAt string
 				if err := db.QueryRow(`SELECT last_changed_at,last_indexed_at FROM sessions LIMIT 1`).Scan(&changedAt, &indexedAt); err != nil {
 					t.Fatal(err)

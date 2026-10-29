@@ -201,6 +201,22 @@ ExecStart=/usr/local/bin/asc-hub compact -config /etc/agent-session-collector/hu
 Run index more frequently than compaction. For example: index every `10m`,
 compact every `1h`.
 
+For upgrades, stop and drain both hub timers/services, back up SQLite using its
+backup API (including WAL state), deploy the matching binary/config, then run
+`asc-hub migrate -config ...` as the hub user before restarting timers. A failed
+migration must leave writers stopped. `migrate applied=0` is an unchanged repeat.
+Preview new retention with `compact -config ... -dry-run` before activation; see
+[configuration](configuration.md). Never roll an older binary back across a
+schema upgrade without restoring the matching backup.
+
+If compact reports a preserved reservation conflict, stop/drain hub jobs and
+back up the catalog, mirrors and archives. Keep the newer arrival in place;
+inspect the reported private quarantine and export that generation to a separate
+protected location before reconciling names. Do not remove pending records or
+quarantine files until their data has a verified copy. Resume indexing and
+compaction after resolving the conflict. Missing/corrupt backing archives also
+preserve plain data: repair or rebuild the backing copy before retrying.
+
 ## Verification
 
 Sender:

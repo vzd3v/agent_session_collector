@@ -40,6 +40,10 @@ version_retention = 3
 version_retention_days = 30
 
 [retention]
+archive_max_age = "0"
+archive_max_bytes = "0"
+min_free_bytes = "0"
+orphan_grace = "0"
 delete_mirror_after_archive = true
 delete_unknown_after = "0s"
 archive_retention_days = "0"

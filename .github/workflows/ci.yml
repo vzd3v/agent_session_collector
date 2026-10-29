@@ -25,6 +25,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Check formatting
+        run: make fmtcheck
+
       - name: Test
         run: go test ./...
 

@@ -32,6 +32,14 @@ Top-level:
 - `bandwidth_limit`: optional rsync bandwidth limit. Empty means unlimited.
 - `max_attempts`: upload attempts per sync run.
 - `backoff`: delay between failed upload attempts.
+- `max_staging_bytes`: batch target; absent/`0` means `512MiB`. Each batch is
+  removed after its rsync. An individual larger artifact travels alone, so peak
+  staged payload is `max(target, largest artifact)` plus list/directory overhead.
+  Files growing after scan are skipped for a later run. A start-time free-space
+  check precedes staging; it is not a disk reservation.
+  The target covers an active batch. SIGKILL/power loss can leave private staging
+  directories behind; use OS temporary-directory cleanup or a service-managed
+  ephemeral `TMPDIR`. The collector does not sweep other processes' temp files.
 
 `[[sources]]`:
 
@@ -133,19 +141,69 @@ adapted.
 - `compression`: currently `zstd`.
 - `zstd_level`: zstd compression level, `1` through `19`.
 - `policy`: `replace` or `versioned`.
+  `replace` keeps only the verified current generation, including after switching
+  from `versioned`; superseded legacy rows/files are retired regardless of the
+  version-retention knobs. The current legacy version number is preserved until
+  a new version-0 replacement is published.
 - `retain_plain_after_archive`: how long to keep the plain mirror file after a
   verified archive exists.
 - `version_retention`: number of archive versions to keep when policy is
   `versioned`.
 - `version_retention_days`: age window for archive versions when policy is
-  `versioned`.
+  `versioned`. Count and age protections are combined; the current archive is
+  always kept. Legacy versions are pruned on every compact pass, including when
+  there are no newly archived sessions.
 
 `[retention]`:
 
 - `delete_mirror_after_archive`: delete plain mirror files after archive
-  retention expires.
-- `delete_unknown_after`: reserved for unknown-file cleanup; `0` disables it.
-- `archive_retention_days`: reserved for archive expiry; `0` disables it.
+  grace expires, after verifying the compressed physical/logical hashes and a
+  valid metadata snapshot. A missing/corrupt archive preserves the plain copy.
+- `archive_max_age`: maximum age since hub-observed logical content change;
+  `0` disables expiry. Durations use Go syntax (`8760h`, not `365d`). Valid
+  `first_seen_at` is the conservative legacy fallback; unknown clocks protect data.
+- `archive_max_bytes`: archive maintenance target, including sidecars, pending
+  files and unmanaged files; `0` disables it. Eligible oldest complete groups
+  expire until the target is reached. This is not an ingress quota.
+- `min_free_bytes`: filesystem free-space floor; `0` disables it. Checked before
+  receiver rsync starts and before archive compression/copy, using the actual
+  destination filesystem. Concurrent writes can cross the floor. Configure OS
+  quotas/reserved space when a hard admission boundary is required.
+- `orphan_grace`: when nonzero, first discovery of an unreferenced recognized
+  archive/temp/sidecar schedules cleanup after this grace. Source-preserved mtime
+  never shortens it. `0` disables orphan discovery. Unrecognized files are kept.
+- `delete_unknown_after`, `archive_retention_days`: reserved compatibility keys;
+  only `0` is accepted. They have no deletion semantics.
+
+All new destructive age/size/orphan limits are disabled by default. Current
+replacement objects are retired automatically; no historical versions accumulate
+under `replace`. Active, unarchived, unverified, unknown-clock and plain-grace
+groups remain protected. Unsatisfied targets report `pressure_unsatisfied` and
+exit nonzero instead of deleting protected data.
+Free-space cleanup selects only groups releasing bytes on a constrained
+filesystem; pressure on a separate mirror filesystem cannot expire archive-only
+groups. Unindexed source artifacts protect that source until indexing catches up.
+
+Retention groups share a source namespace and explicit native root/parent identity;
+repeated Codex thread pages are kept together. Fork ancestry remains separate.
+Claude tool-result ownership requires the exact root directory and a matching
+cataloged native root; unknown ownership stays protected. The global Codex name
+index is stored once and kept while any source artifact remains. Its content
+does not refresh transcript TTL. See [the lifecycle contract](dev/data-contracts.md#lifecycle).
+
+Preview configured retention before enabling a policy:
+
+```bash
+asc-hub migrate -config /etc/agent-session-collector/hub.toml
+asc-hub compact -config /etc/agent-session-collector/hub.toml -dry-run
+```
+
+Preview returns JSON actions, protected reasons, physical archive bytes and
+projected remaining pressure. It requires the current catalog schema and opens
+SQLite with `mode=ro`: no migrations, compression, sidecars or cleanup occur.
+SQLite may create an empty `-wal` and update transient reader marks in `-shm`;
+catalog content, WAL frames and artifacts stay unchanged. The filesystem can
+advance during the preview.
 
 ## Safe Defaults
 

@@ -64,6 +64,14 @@ mirror files. With the default archive policy, the hub compacts quiet sessions t
 `.jsonl.zst` and may delete the plain mirror copy after
 `archive.retain_plain_after_archive`.
 
+Age/byte expiry is opt-in. It protects active/unverified/grace groups and preserves
+explicit root/subagent groups. Review `compact -dry-run` before activation.
+Digest tombstones prevent automatic resurrection of expired content; they do not
+prevent an authenticated sender filling its own mirror. Free-space guards are
+start-time checks, not reservations. Use filesystem quotas for hard limits.
+Keep each storage root's `.asc-trash` owned by the hub user with mode `0700`,
+outside sender-writable subdirectories. See [the lifecycle contract](dev/data-contracts.md#lifecycle).
+
 ## Incident Response
 
 If a sender key is exposed:

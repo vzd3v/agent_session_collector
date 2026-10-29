@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/vzd3v/agent_session_collector/internal/config"
+	"github.com/vzd3v/agent_session_collector/internal/diskspace"
 	"github.com/vzd3v/agent_session_collector/internal/rsyncprofile"
 )
 
@@ -26,6 +27,40 @@ var ErrSourceChanged = errors.New("source changed since scan")
 
 func (u RsyncUploader) Upload(ctx context.Context, files []File) (UploadResult, error) {
 	result := UploadResult{}
+	limit := u.Config.Sync.StagingLimit()
+	for len(files) > 0 {
+		count := 0
+		var size int64
+		for count < len(files) {
+			n := files[count].SizeBytes
+			if files[count].InlineContent != nil {
+				n = int64(len(files[count].InlineContent))
+			}
+			if n < 0 {
+				return result, fmt.Errorf("negative staged source size")
+			}
+			if count > 0 && (size > limit || n > limit-size) {
+				break
+			}
+			size += n
+			count++
+			if size >= limit {
+				break
+			}
+		}
+		batch, err := u.uploadBatch(ctx, files[:count], size)
+		result.Uploaded = append(result.Uploaded, batch.Uploaded...)
+		result.Skipped = append(result.Skipped, batch.Skipped...)
+		if err != nil {
+			return result, err
+		}
+		files = files[count:]
+	}
+	return result, nil
+}
+
+func (u RsyncUploader) uploadBatch(ctx context.Context, files []File, expected int64) (UploadResult, error) {
+	result := UploadResult{}
 	if len(files) == 0 {
 		return result, nil
 	}
@@ -36,11 +71,15 @@ func (u RsyncUploader) Upload(ctx context.Context, files []File) (UploadResult, 
 	defer func() {
 		_ = os.RemoveAll(stage)
 	}()
+	if err := diskspace.Check(stage, 0, expected); err != nil {
+		return result, fmt.Errorf("sender staging admission: %w", err)
+	}
 
 	filesFrom := make([]string, 0, len(files))
 	for _, file := range files {
 		if err := stageFile(stage, file); err != nil {
 			if errors.Is(err, ErrSourceChanged) {
+				_ = os.Remove(filepath.Join(stage, filepath.FromSlash(file.RemotePath)))
 				result.Skipped = append(result.Skipped, file)
 				continue
 			}
@@ -132,9 +171,17 @@ func copyRegularFile(file File, target string) error {
 	if err != nil {
 		return fmt.Errorf("create target: %w", err)
 	}
-	_, copyErr := io.Copy(out, in)
+	copied, copyErr := io.Copy(out, io.LimitReader(in, file.SizeBytes+1))
+	var after syscall.Stat_t
+	statErr := syscall.Fstat(fd, &after)
 	closeErr := out.Close()
-	return errors.Join(copyErr, closeErr)
+	if copyErr != nil || closeErr != nil || statErr != nil {
+		return errors.Join(copyErr, closeErr, statErr)
+	}
+	if copied != file.SizeBytes || after.Size != stat.Size || statMtimeUnixNS(after) != statMtimeUnixNS(stat) {
+		return fmt.Errorf("%w: source changed while staging", ErrSourceChanged)
+	}
+	return nil
 }
 
 func statMtimeUnixNS(stat syscall.Stat_t) int64 {

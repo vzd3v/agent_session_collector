@@ -5,13 +5,13 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -20,17 +20,20 @@ import (
 	"github.com/vzd3v/agent_session_collector/internal/checksum"
 	"github.com/vzd3v/agent_session_collector/internal/config"
 	"github.com/vzd3v/agent_session_collector/internal/constants"
+	"github.com/vzd3v/agent_session_collector/internal/diskspace"
 	"github.com/vzd3v/agent_session_collector/internal/schema"
 )
 
 type CompactOptions struct {
-	Now func() time.Time
+	Now    func() time.Time
+	DryRun bool
 }
 
 type CompactResult struct {
 	Scanned       int
 	Archived      int
 	DeletedMirror int
+	Plan          *RetentionPlan
 }
 
 type compactSession struct {
@@ -48,16 +51,44 @@ type compactSession struct {
 	LatestRawSHA256      string
 	LatestArchivePath    string
 	LatestArchiveSHA256  string
+	Role                 string
 }
 
 func Compact(ctx context.Context, cfg config.HubAppConfig, opts CompactOptions) (CompactResult, error) {
-	if !cfg.Archive.Enabled {
-		return CompactResult{}, nil
-	}
 	now := time.Now().UTC()
 	if opts.Now != nil {
 		now = opts.Now().UTC()
 	}
+	if opts.DryRun {
+		db, err := schema.OpenReadOnly(cfg.Paths.Catalog)
+		if err != nil {
+			return CompactResult{}, err
+		}
+		defer func() { _ = db.Close() }()
+		if err := requireRetentionSchema(ctx, db); err != nil {
+			return CompactResult{}, err
+		}
+		// One read transaction gives the preview a consistent catalog snapshot;
+		// filesystem generations are independently checked and may still advance.
+		if _, err := db.ExecContext(ctx, `BEGIN`); err != nil {
+			return CompactResult{}, err
+		}
+		defer func() { _, _ = db.ExecContext(context.Background(), `ROLLBACK`) }()
+		plan, err := buildRetentionPlan(ctx, db, cfg, now)
+		if err != nil {
+			return CompactResult{}, err
+		}
+		result := CompactResult{Plan: &plan}
+		if plan.PressureUnsatisfied {
+			return result, fmt.Errorf("pressure_unsatisfied: protected data prevents retention targets")
+		}
+		return result, nil
+	}
+	unlock, err := lockHub(ctx, cfg.Paths.Catalog)
+	if err != nil {
+		return CompactResult{}, err
+	}
+	defer unlock()
 	if err := os.MkdirAll(cfg.Paths.Archive, 0o750); err != nil {
 		return CompactResult{}, fmt.Errorf("create archive root: %w", err)
 	}
@@ -71,6 +102,28 @@ func Compact(ctx context.Context, cfg config.HubAppConfig, opts CompactOptions) 
 	if err := schema.Apply(ctx, db, schema.Hub); err != nil {
 		return CompactResult{}, err
 	}
+	if _, err := db.ExecContext(ctx, `PRAGMA synchronous=FULL`); err != nil {
+		return CompactResult{}, err
+	}
+	if err := recoverExpiryGroups(ctx, db, cfg); err != nil {
+		return CompactResult{}, err
+	}
+	if err := repairCurrentArchiveMetadata(ctx, db, cfg, now); err != nil {
+		return CompactResult{}, err
+	}
+	if _, err := drainDeletions(ctx, db, cfg, now); err != nil {
+		return CompactResult{}, err
+	}
+	before, err := buildRetentionPlan(ctx, db, cfg, now)
+	if err != nil {
+		return CompactResult{}, err
+	}
+	if err := applyRetentionPlan(ctx, db, cfg, before, now); err != nil {
+		return CompactResult{}, err
+	}
+	if _, err := drainDeletions(ctx, db, cfg, now); err != nil {
+		return CompactResult{}, err
+	}
 	sessions, err := loadHotSessions(ctx, db)
 	if err != nil {
 		return CompactResult{}, err
@@ -78,6 +131,9 @@ func Compact(ctx context.Context, cfg config.HubAppConfig, opts CompactOptions) 
 	result := CompactResult{Scanned: len(sessions)}
 	cutoff := now.Add(-cfg.Archive.QuietAfter.Duration)
 	for _, session := range sessions {
+		if !cfg.Archive.Enabled {
+			break
+		}
 		mtime := time.Unix(0, session.LatestMtimeUnixNS).UTC()
 		if mtime.After(cutoff) {
 			continue
@@ -90,22 +146,39 @@ func Compact(ctx context.Context, cfg config.HubAppConfig, opts CompactOptions) 
 			continue
 		}
 		result.Archived++
-		if cfg.Archive.Policy == "versioned" {
-			if err := pruneVersionedArchives(ctx, db, cfg, session.SessionKey, now); err != nil {
-				return result, err
-			}
-		}
 	}
-	deleted, err := deleteRetainedArchivedMirrors(ctx, db, cfg, now)
+	deleted, err := deleteVerifiedMirrors(ctx, db, cfg, now)
 	if err != nil {
 		return result, err
 	}
 	result.DeletedMirror += deleted
+	plan, err := buildRetentionPlan(ctx, db, cfg, now)
+	if err != nil {
+		return result, err
+	}
+	if err := applyRetentionPlan(ctx, db, cfg, plan, now); err != nil {
+		return result, err
+	}
+	if _, err := drainDeletions(ctx, db, cfg, now); err != nil {
+		return result, err
+	}
+	final, err := buildRetentionPlan(ctx, db, cfg, now)
+	if err != nil {
+		return result, err
+	}
+	actual := final
+	actual.PlannedBytes = 0
+	actual.PlannedMirrorBytes = 0
+	final.PressureUnsatisfied = retentionPressure(cfg, actual)
+	result.Plan = &final
+	if final.PressureUnsatisfied {
+		return result, fmt.Errorf("pressure_unsatisfied: protected data prevents retention targets")
+	}
 	return result, nil
 }
 
 func loadHotSessions(ctx context.Context, db *sql.DB) ([]compactSession, error) {
-	rows, err := db.QueryContext(ctx, `SELECT session_key, agent, sender, user, session_id, mirror_path, latest_size_bytes, latest_mtime_unix_ns, latest_raw_sha256, latest_archive_path, latest_archive_sha256,source_encoding,latest_physical_sha256,latest_raw_size_bytes
+	rows, err := db.QueryContext(ctx, `SELECT session_key, agent, sender, user, session_id, mirror_path, latest_size_bytes, latest_mtime_unix_ns, latest_raw_sha256, latest_archive_path, latest_archive_sha256,source_encoding,latest_physical_sha256,latest_raw_size_bytes,artifact_role
 FROM sessions WHERE archive_status = ? ORDER BY session_key`, constants.ArchiveStatusHot)
 	if err != nil {
 		return nil, fmt.Errorf("query hot sessions: %w", err)
@@ -129,6 +202,7 @@ FROM sessions WHERE archive_status = ? ORDER BY session_key`, constants.ArchiveS
 			&session.LatestArchivePath,
 			&session.LatestArchiveSHA256,
 			&session.SourceEncoding, &session.LatestPhysicalSHA256, &session.LatestRawSizeBytes,
+			&session.Role,
 		); err != nil {
 			return nil, fmt.Errorf("scan hot session: %w", err)
 		}
@@ -158,6 +232,13 @@ func archiveSession(ctx context.Context, db *sql.DB, cfg config.HubAppConfig, se
 	if rawSHA256 != physicalHash(session) {
 		return false, fmt.Errorf("mirror checksum mismatch for %s", session.MirrorPath)
 	}
+	expected := session.LatestSizeBytes
+	if session.SourceEncoding != artifact.Zstd {
+		expected += expected/128 + 1024*1024
+	}
+	if err := diskspace.Check(cfg.Paths.Archive, cfg.Retention.MinFreeBytes.Bytes, expected); err != nil {
+		return false, fmt.Errorf("archive admission: %w", err)
+	}
 	version, err := nextArchiveVersion(ctx, db, cfg.Archive.Policy, session.SessionKey)
 	if err != nil {
 		return false, err
@@ -179,7 +260,7 @@ func archiveSession(ctx context.Context, db *sql.DB, cfg config.HubAppConfig, se
 		_ = os.Remove(tmpPath)
 		return false, err
 	}
-	if err := verifyZstd(ctx, tmpPath, session.LatestRawSHA256); err != nil {
+	if err := verifyZstd(ctx, tmpPath, session.LatestRawSHA256, logicalSize(session)); err != nil {
 		_ = os.Remove(tmpPath)
 		return false, err
 	}
@@ -190,7 +271,7 @@ func archiveSession(ctx context.Context, db *sql.DB, cfg config.HubAppConfig, se
 	}
 	if _, err := os.Stat(finalPath); err == nil {
 		_ = os.Remove(tmpPath)
-		if err := verifyZstd(ctx, finalPath, session.LatestRawSHA256); err != nil {
+		if err := verifyZstd(ctx, finalPath, session.LatestRawSHA256, logicalSize(session)); err != nil {
 			return false, err
 		}
 		archiveSHA256, err = checksum.FileSHA256(finalPath)
@@ -206,10 +287,25 @@ func archiveSession(ctx context.Context, db *sql.DB, cfg config.HubAppConfig, se
 		_ = os.Remove(tmpPath)
 		return false, fmt.Errorf("stat final archive: %w", err)
 	}
-	if err := recordArchive(ctx, db, cfg, session, version, finalPath, archiveSHA256, now); err != nil {
+	committed, err := os.Open(finalPath)
+	if err != nil {
 		return false, err
 	}
-	if err := writeArchiveMetadata(ctx, db, session.SessionKey, finalPath, now, "archive_time"); err != nil {
+	syncErr := committed.Sync()
+	closeErr := committed.Close()
+	if syncErr != nil || closeErr != nil {
+		return false, errors.Join(syncErr, closeErr)
+	}
+	if err := syncStorageParents(cfg.Paths.Archive, filepath.Dir(finalPath)); err != nil {
+		return false, err
+	}
+	if err := writeArchiveMetadata(ctx, db, session.SessionKey, finalPath, now, "archive_time", cfg.Retention.MinFreeBytes.Bytes); err != nil {
+		return false, err
+	}
+	if err := syncArchiveSidecar(finalPath); err != nil {
+		return false, err
+	}
+	if err := recordArchive(ctx, db, cfg, session, version, finalPath, archiveSHA256, now); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -271,14 +367,21 @@ func archivePath(cfg config.HubAppConfig, session compactSession, version int) s
 		baseName = hashShort(session.SessionKey)
 	}
 	stableName := baseName + "." + hashShort(session.SessionKey) + "." + hashShort(session.LatestRawSHA256)
+	extension := "jsonl"
+	switch session.Role {
+	case artifact.SubagentMetadata:
+		extension = "json"
+	case artifact.ToolResult:
+		extension = "bin"
+	}
 	if session.SourceEncoding == artifact.Zstd {
 		stableName += "." + hashShort(physicalHash(session))
 	}
 	switch cfg.Archive.Policy {
 	case "versioned":
-		baseName = fmt.Sprintf("%s.v%d.jsonl.zst", stableName, version)
+		baseName = fmt.Sprintf("%s.v%d.%s.zst", stableName, version, extension)
 	default:
-		baseName = stableName + ".jsonl.zst"
+		baseName = stableName + "." + extension + ".zst"
 	}
 	return filepath.Join(cfg.Paths.Archive, safeArchiveFileName(session.Sender), safeArchiveFileName(session.User), safeArchiveFileName(session.Agent), baseName)
 }
@@ -316,23 +419,23 @@ func compressZstd(ctx context.Context, cfg config.HubAppConfig, inputPath string
 	return nil
 }
 
-func verifyZstd(ctx context.Context, path string, expectedRawSHA256 string) error {
-	cmd := exec.CommandContext(ctx, "zstd", "-q", "-dc", path)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("prepare zstd verification: %w", err)
-	}
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start zstd verification: %w", err)
-	}
+func verifyZstd(ctx context.Context, name string, expectedRawSHA256 string, expectedSize ...int64) error {
 	h := sha256.New()
-	_, copyErr := io.Copy(h, stdout)
-	waitErr := cmd.Wait()
-	if copyErr != nil {
-		return fmt.Errorf("read decompressed zstd archive: %w", copyErr)
-	}
-	if waitErr != nil {
-		return fmt.Errorf("verify zstd archive: %w", waitErr)
+	err := artifact.Read(ctx, name, artifact.Zstd, func(r io.Reader) error {
+		var n int64
+		var err error
+		if len(expectedSize) > 0 {
+			n, err = io.Copy(h, io.LimitReader(r, expectedSize[0]+1))
+			if err == nil && n != expectedSize[0] {
+				return fmt.Errorf("archive logical size mismatch")
+			}
+		} else {
+			_, err = io.Copy(h, r)
+		}
+		return err
+	})
+	if err != nil {
+		return err
 	}
 	got := hex.EncodeToString(h.Sum(nil))
 	if got != expectedRawSHA256 {
@@ -350,6 +453,28 @@ func recordArchive(ctx context.Context, db *sql.DB, cfg config.HubAppConfig, ses
 	defer func() {
 		_ = tx.Rollback()
 	}()
+	if cfg.Archive.Policy != "versioned" {
+		var oldPath, oldHash string
+		err := tx.QueryRowContext(ctx, `SELECT path,archive_sha256 FROM session_archives WHERE session_key=? AND version=0`, session.SessionKey).Scan(&oldPath, &oldHash)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if err == nil && oldPath != archivePath {
+			proof := &archiveProof{Path: archivePath, Hash: archiveSHA256, RawHash: session.LatestRawSHA256, RawSize: logicalSize(session)}
+			if err := queueBackedFile(ctx, tx, cfg, "archive", oldPath, oldHash, "replaced", proof, now); err != nil {
+				return err
+			}
+			oldSidecarHash, _, sideErr := physicalFile(ctx, oldPath+".metadata.json")
+			if sideErr != nil && !errors.Is(sideErr, os.ErrNotExist) {
+				return sideErr
+			}
+			if sideErr == nil {
+				if err := queueBackedFile(ctx, tx, cfg, "archive", oldPath+".metadata.json", oldSidecarHash, "replaced", proof, now); err != nil {
+					return err
+				}
+			}
+		}
+	}
 	if cfg.Archive.Policy == "versioned" {
 		if _, err := tx.ExecContext(ctx, `UPDATE session_archives SET superseded_at = ? WHERE session_key = ? AND superseded_at = ''`, nowText, session.SessionKey); err != nil {
 			return fmt.Errorf("supersede archive versions: %w", err)
@@ -381,207 +506,100 @@ superseded_at = ''`, session.SessionKey, archivePath, logicalSize(session), sess
 	return nil
 }
 
-func deleteMirrorAfterRetainWindow(cfg config.HubAppConfig, session compactSession, archiveCreatedAt time.Time, now time.Time) (bool, error) {
-	if now.Sub(archiveCreatedAt) < cfg.Archive.RetainPlainAfterArchive.Duration {
-		return false, nil
-	}
-	matches, err := mirrorMatchesCatalog(session)
-	if err != nil {
-		return false, err
-	}
-	if !matches {
-		return false, nil
-	}
-	trashPath, moved, err := moveMirrorForDeletion(session.MirrorPath)
-	if err != nil || !moved {
-		return false, err
-	}
-	matches, err = mirrorPathMatchesCatalog(session, trashPath)
-	if err != nil {
-		return false, errors.Join(err, restoreMovedMirror(trashPath, session.MirrorPath))
-	}
-	if !matches {
-		if err := restoreMovedMirror(trashPath, session.MirrorPath); err != nil {
-			return false, err
-		}
-		return false, nil
-	}
-	if err := os.Remove(trashPath); err != nil {
-		return false, fmt.Errorf("delete archived mirror file: %w", err)
-	}
-	return true, nil
-}
-
 func mirrorMatchesCatalog(session compactSession) (bool, error) {
-	return mirrorPathMatchesCatalog(session, session.MirrorPath)
-}
-
-func mirrorPathMatchesCatalog(session compactSession, candidatePath string) (bool, error) {
-	info, err := os.Stat(candidatePath)
+	info, err := os.Lstat(session.MirrorPath)
 	if os.IsNotExist(err) {
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("stat mirror before retained deletion: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return false, nil
-	}
-	if info.Size() != session.LatestSizeBytes || info.ModTime().UnixNano() != session.LatestMtimeUnixNS {
-		return false, nil
-	}
-	rawSHA256, err := checksum.FileSHA256(candidatePath)
-	if err != nil {
 		return false, err
 	}
-	return rawSHA256 == physicalHash(session), nil
+	if !info.Mode().IsRegular() || info.Size() != session.LatestSizeBytes || info.ModTime().UnixNano() != session.LatestMtimeUnixNS {
+		return false, nil
+	}
+	hash, _, err := physicalFile(context.Background(), session.MirrorPath)
+	return hash == physicalHash(session), err
 }
 
-func moveMirrorForDeletion(mirrorPath string) (string, bool, error) {
-	dir := filepath.Dir(mirrorPath)
-	base := filepath.Base(mirrorPath)
-	trashFile, err := os.CreateTemp(dir, "."+base+".delete-*")
-	if err != nil {
-		return "", false, fmt.Errorf("create mirror delete temp: %w", err)
-	}
-	trashPath := trashFile.Name()
-	if err := trashFile.Close(); err != nil {
-		_ = os.Remove(trashPath)
-		return "", false, fmt.Errorf("close mirror delete temp: %w", err)
-	}
-	if err := os.Remove(trashPath); err != nil {
-		return "", false, fmt.Errorf("remove mirror delete placeholder: %w", err)
-	}
-	if err := os.Rename(mirrorPath, trashPath); err != nil {
-		if os.IsNotExist(err) {
-			return "", false, nil
-		}
-		return "", false, fmt.Errorf("move mirror for retained deletion: %w", err)
-	}
-	return trashPath, true, nil
-}
-
-func restoreMovedMirror(trashPath string, mirrorPath string) error {
-	if err := os.Link(trashPath, mirrorPath); err != nil {
-		if os.IsExist(err) {
-			return fmt.Errorf("mirror changed during retained deletion; preserved moved file at %s", trashPath)
-		}
-		return fmt.Errorf("restore retained mirror after verification mismatch: %w", err)
-	}
-	if err := os.Remove(trashPath); err != nil {
-		return fmt.Errorf("remove restored mirror quarantine: %w", err)
-	}
-	return nil
-}
-
-type archiveRecord struct {
-	Version   int
-	Path      string
-	CreatedAt time.Time
-}
-
-func pruneVersionedArchives(ctx context.Context, db *sql.DB, cfg config.HubAppConfig, sessionKey string, now time.Time) error {
-	if cfg.Archive.VersionRetention == 0 && cfg.Archive.VersionRetentionDays == 0 {
-		return nil
-	}
-	rows, err := db.QueryContext(ctx, `SELECT version, path, created_at FROM session_archives WHERE session_key = ? ORDER BY version DESC`, sessionKey)
-	if err != nil {
-		return fmt.Errorf("query archive versions for prune: %w", err)
-	}
-	defer func() {
-		_ = rows.Close()
-	}()
-	var records []archiveRecord
-	for rows.Next() {
-		var record archiveRecord
-		var createdAt string
-		if err := rows.Scan(&record.Version, &record.Path, &createdAt); err != nil {
-			return fmt.Errorf("scan archive version: %w", err)
-		}
-		parsed, err := time.Parse(time.RFC3339Nano, createdAt)
-		if err != nil {
-			return fmt.Errorf("parse archive created_at: %w", err)
-		}
-		record.CreatedAt = parsed
-		records = append(records, record)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate archive versions: %w", err)
-	}
-	sort.Slice(records, func(i, j int) bool { return records[i].Version > records[j].Version })
-	keep := map[int]struct{}{}
-	for i, record := range records {
-		if cfg.Archive.VersionRetention > 0 && i < cfg.Archive.VersionRetention {
-			keep[record.Version] = struct{}{}
-			continue
-		}
-		if cfg.Archive.VersionRetentionDays > 0 && now.Sub(record.CreatedAt) < time.Duration(cfg.Archive.VersionRetentionDays)*24*time.Hour {
-			keep[record.Version] = struct{}{}
-		}
-	}
-	for _, record := range records {
-		if _, ok := keep[record.Version]; ok {
-			continue
-		}
-		if err := os.Remove(record.Path); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("remove pruned archive: %w", err)
-		}
-		if _, err := db.ExecContext(ctx, `DELETE FROM session_archives WHERE session_key = ? AND version = ?`, sessionKey, record.Version); err != nil {
-			return fmt.Errorf("delete pruned archive row: %w", err)
-		}
-	}
-	return nil
-}
-
-func deleteRetainedArchivedMirrors(ctx context.Context, db *sql.DB, cfg config.HubAppConfig, now time.Time) (int, error) {
+// A valid catalog pointer alone never authorizes removal of the last plain copy.
+func deleteVerifiedMirrors(ctx context.Context, db *sql.DB, cfg config.HubAppConfig, now time.Time) (int, error) {
 	if !cfg.Retention.DeleteMirrorAfterArchive {
 		return 0, nil
 	}
-	rows, err := db.QueryContext(ctx, `SELECT s.session_key, s.agent, s.sender, s.user, s.session_id, s.mirror_path, s.latest_size_bytes, s.latest_mtime_unix_ns, s.latest_raw_sha256, s.latest_archive_path, s.latest_archive_sha256, a.created_at,s.source_encoding,s.latest_physical_sha256,s.latest_raw_size_bytes
-FROM sessions s
-JOIN session_archives a ON a.session_key = s.session_key AND a.path = s.latest_archive_path
-WHERE s.archive_status = ?`, constants.ArchiveStatusArchived)
+	sessions, err := loadRetentionSessions(ctx, db)
 	if err != nil {
-		return 0, fmt.Errorf("query archived mirrors for deletion: %w", err)
+		return 0, err
 	}
-	defer func() {
-		_ = rows.Close()
-	}()
+	queued := 0
+	var candidates []string
+	for _, s := range sessions {
+		if s.Status != constants.ArchiveStatusArchived {
+			continue
+		}
+		var created time.Time
+		for _, a := range s.archives {
+			if a.Path == s.LatestArchivePath {
+				created, _ = validClock(a.Created)
+				break
+			}
+		}
+		if created.IsZero() || now.Sub(created) < cfg.Archive.RetainPlainAfterArchive.Duration {
+			continue
+		}
+		matches, err := mirrorMatchesCatalog(s.compactSession)
+		if err != nil {
+			return queued, err
+		}
+		if !matches {
+			continue
+		}
+		if err := verifyCurrentArchive(ctx, s.compactSession); err != nil {
+			return queued, fmt.Errorf("preserve plain copy: %w", err)
+		}
+		// Sidecars are part of the portable archive. Repair a missing legacy snapshot
+		// before plain deletion; existing snapshots are never rewritten.
+		if err := writeArchiveMetadata(ctx, db, s.SessionKey, s.LatestArchivePath, now, "legacy_backfill_current_metadata", cfg.Retention.MinFreeBytes.Bytes); err != nil {
+			return queued, err
+		}
+		if err := syncArchiveSidecar(s.LatestArchivePath); err != nil {
+			return queued, err
+		}
+		var metadata struct {
+			RawSHA      string `json:"raw_sha256"`
+			PhysicalSHA string `json:"physical_sha256"`
+			ArtifactID  string `json:"artifact_id"`
+		}
+		err = artifact.Read(ctx, s.LatestArchivePath+".metadata.json", artifact.Plain, func(r io.Reader) error { return json.NewDecoder(io.LimitReader(r, 128*1024)).Decode(&metadata) })
+		if err != nil || metadata.RawSHA != s.LatestRawSHA256 || metadata.PhysicalSHA != physicalHash(s.compactSession) || (s.ArtifactID != "" && metadata.ArtifactID != s.ArtifactID) {
+			return queued, fmt.Errorf("preserve plain copy: invalid archive metadata snapshot")
+		}
+		if err := queueBackedFile(ctx, db, cfg, "mirror", s.MirrorPath, physicalHash(s.compactSession), "archived_plain", proofFor(s), now); err != nil {
+			return queued, err
+		}
+		queued++
+		candidates = append(candidates, s.MirrorPath)
+	}
+	if _, err := drainDeletions(ctx, db, cfg, now); err != nil {
+		return queued, err
+	}
 	deleted := 0
-	for rows.Next() {
-		var session compactSession
-		var createdAtText string
-		if err := rows.Scan(
-			&session.SessionKey,
-			&session.Agent,
-			&session.Sender,
-			&session.User,
-			&session.SessionID,
-			&session.MirrorPath,
-			&session.LatestSizeBytes,
-			&session.LatestMtimeUnixNS,
-			&session.LatestRawSHA256,
-			&session.LatestArchivePath,
-			&session.LatestArchiveSHA256,
-			&createdAtText,
-			&session.SourceEncoding, &session.LatestPhysicalSHA256, &session.LatestRawSizeBytes,
-		); err != nil {
-			return deleted, fmt.Errorf("scan archived mirror for deletion: %w", err)
-		}
-		createdAt, err := time.Parse(time.RFC3339Nano, createdAtText)
-		if err != nil {
-			return deleted, fmt.Errorf("parse archive created_at: %w", err)
-		}
-		ok, err := deleteMirrorAfterRetainWindow(cfg, session, createdAt, now)
-		if err != nil {
-			return deleted, err
-		}
-		if ok {
+	for _, name := range candidates {
+		if _, err := os.Lstat(name); os.IsNotExist(err) {
 			deleted++
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return deleted, fmt.Errorf("iterate archived mirrors for deletion: %w", err)
-	}
 	return deleted, nil
+}
+
+func syncArchiveSidecar(archive string) error {
+	f, err := os.Open(archive + ".metadata.json")
+	if err != nil {
+		return err
+	}
+	syncErr := f.Sync()
+	closeErr := f.Close()
+	if syncErr != nil || closeErr != nil {
+		return errors.Join(syncErr, closeErr)
+	}
+	return syncDirectory(filepath.Dir(archive))
 }

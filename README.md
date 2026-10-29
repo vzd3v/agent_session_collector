@@ -19,6 +19,8 @@ no sender daemon, no resident hub process, and no database server.
 - Emits lightweight `agent_session_index` JSON Lines to an HTTP log endpoint.
 - Compresses quiet sessions to `.jsonl.zst` with replace or versioned archive
   policy.
+- Previews and applies opt-in age/space retention to complete native session
+  groups, with crash-recoverable deletion intents and expired-content replay guards.
 
 ## What It Does Not Do
 
@@ -37,13 +39,13 @@ data. Treat the hub as sensitive infrastructure. See
 | --- | --- | --- |
 | `asc-sender` | sender hosts | Scan transcript files, skip unchanged files, upload changed snapshots with rsync. |
 | `asc-receive` | hub host | SSH forced-command wrapper that validates sender identity and rsync server mode. |
-| `asc-hub` | hub host | Index mirror files, emit session-index events, compact quiet files, run health checks. |
+| `asc-hub` | hub host | Migrate/index the catalog, emit session-index events, compact files, preview/apply retention, run checks. |
 
 ## Requirements
 
 - Go 1.27.3 or newer to build.
 - `rsync` on sender and hub hosts.
-- `zstd` on the hub when archive compaction is enabled.
+- `zstd` on the hub for native compressed input or archive compaction.
 - SSH access from each sender to its dedicated hub receive account.
 
 Runtime state is stored in SQLite files:
@@ -58,6 +60,10 @@ Build the binaries:
 ```bash
 make build
 ```
+
+Binaries go to `dist/` and report the Git revision, including a `-dirty` suffix
+for local changes. Set `VERSION` explicitly when building a source archive
+without Git metadata.
 
 Copy and edit the example configs:
 

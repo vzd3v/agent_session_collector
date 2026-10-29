@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/shlex"
 	"github.com/vzd3v/agent_session_collector/internal/config"
+	"github.com/vzd3v/agent_session_collector/internal/diskspace"
 )
 
 const defaultRsyncPath = "/usr/bin/rsync"
@@ -71,6 +72,9 @@ func Exec(cfg config.HubAppConfig, req Request, env []string) error {
 	}
 	if err := os.MkdirAll(plan.MirrorPath, 0o770); err != nil {
 		return fmt.Errorf("create mirror path: %w", err)
+	}
+	if err := diskspace.Check(plan.MirrorPath, cfg.Retention.MinFreeBytes.Bytes, 0); err != nil {
+		return fmt.Errorf("receive admission: %w", err)
 	}
 	argv := append([]string{plan.RsyncPath}, plan.Args...)
 	return syscall.Exec(plan.RsyncPath, argv, env)

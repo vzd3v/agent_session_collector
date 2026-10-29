@@ -115,8 +115,77 @@ snapshots have `provenance=archive_time`; missing historical snapshots can be
 backfilled with `provenance=legacy_backfill_current_metadata` and the actual
 capture time. Backfill never claims that today's labels were known at archive
 creation. Existing snapshots are immutable when current source labels change.
+Compact also repairs missing verified current-generation snapshots without a
+plain mirror, before resuming backed deletions. It does not invent snapshots for
+superseded historical versions.
 Keep these sidecars with their archives when moving/exporting them. They are
 metadata, not complete tool-output dependencies or execution environments.
+
+## Lifecycle
+
+Index, compact and migrate serialize through `<catalog>.lock` using Linux flock.
+`asc-hub migrate` applies only schema migrations and prints `migrate applied=N`;
+a repeat reports `0`. Stop/drain scheduled writers before binary/config/schema
+upgrades and take a SQLite backup. Migrations preserve existing artifact keys.
+
+`pending_deletions` persists root-relative paths, expected physical SHA-256/size,
+reason, grace deadline and a deterministic quarantine name. Archive publication
+syncs the file/directory before committing its catalog pointer. Destructive
+transactions use SQLite synchronous FULL and commit the deletion intent before
+filesystem removal. Replacement metadata is published and synced before its
+current pointer and retirement intents commit. Replace retires the old
+archive/sidecar with that transaction. Version pruning runs independently of
+new compression. Every actual backed deletion (plain mirror or superseded
+archive) revalidates its backing archive and snapshot, including during recovery;
+missing/corrupt backing data preserves/restores the selected copy and reports an
+error.
+
+Deletion renames into hub-owned `0700` `.asc-trash` under the corresponding
+storage root, rechecks the quarantined generation, unlinks and syncs directories,
+then clears the intent. This allows retry after process interruption at each
+stage. A mismatching live generation is kept. A race detected after rename is
+restored without overwriting a newer arrival; if restoration conflicts, both
+files are preserved and compact reports the quarantine for operator review.
+Keep storage roots and quarantines on the same filesystem. Receivers cannot
+write quarantine, catalog or archive directories.
+
+Group expiry first persists `pending_expiry_groups` and blocked mirror intents,
+then reserves all selected mirror generations in private quarantine. Changed
+members or observed unindexed source artifacts abort the group and restore its
+members without changing catalog/archive state. Precommit crash recovery rolls
+the reservation back; a conflicting new arrival is preserved with the quarantine
+and reported for operator review. Blocked intents cannot be drained as deletions.
+
+The reservation epoch selects known old generations. Sequential generation and
+namespace checks do not exclude receivers or form an atomic filesystem snapshot.
+Conflicts observed before commit abort expiry; unobserved publications after
+reservation are later generations, retained for reindexing, and cannot
+retroactively undo expiry. No receiver admission protocol is introduced.
+
+A successful reservation commits digest-specific `expiry_tombstones`, archive
+intents, promotion of blocked mirror intents and catalog removal in one
+transaction. Recovery then finishes only the reserved old generations. Indexing
+rejects identical expired content even
+when a sender reuploads it; different content at the same artifact path is
+accepted. Tombstones are retained without a time limit because sender source
+files are not deleted. Their size grows with expired artifact generations.
+Replay protection is eventual hub indexing/cleanup, not transport admission or
+a sender receipt. A valid same-content replay may occupy mirror space until the
+next compact. Source cleanup and archival acknowledgements are outside this
+contract.
+
+TTL uses `last_changed_at` (logical-hash changes only), falling back to valid
+legacy `first_seen_at`. It does not use source mtime, labels or heartbeat time.
+Known native roots, repeated thread pages and same-source explicit Codex parent
+edges form bounded groups; explicit fork edges do not. An incomplete identity
+graph uses only available evidence. Global name indexes are source-scoped shared
+artifacts, and unknown tool-result ownership is protected. Maintenance targets
+include every physical regular file below the archive root. Unknown files and
+graces can prevent reaching a target; this is reported without overriding safety.
+
+The preview uses one read-only SQLite transaction. It verifies existing data and
+reports reasons/physical bytes without recovering intents or changing storage.
+It is a catalog snapshot, not a reservation against concurrent receiver writes.
 
 ## VictoriaLogs Event
 

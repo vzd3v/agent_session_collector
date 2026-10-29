@@ -94,6 +94,11 @@ type pendingEvent struct {
 }
 
 func Index(ctx context.Context, cfg config.HubAppConfig, opts Options) (IndexResult, error) {
+	unlock, err := lockHub(ctx, cfg.Paths.Catalog)
+	if err != nil {
+		return IndexResult{}, err
+	}
+	defer unlock()
 	now := time.Now().UTC()
 	if opts.Now != nil {
 		now = opts.Now().UTC()
@@ -102,7 +107,6 @@ func Index(ctx context.Context, cfg config.HubAppConfig, opts Options) (IndexRes
 	if runID == "" {
 		runID = fmt.Sprintf("run-%d", now.UnixNano())
 	}
-	files, scanErr := scanMirror(cfg)
 	if err := os.MkdirAll(filepath.Dir(cfg.Paths.Catalog), 0o750); err != nil {
 		return IndexResult{}, fmt.Errorf("create catalog dir: %w", err)
 	}
@@ -116,6 +120,13 @@ func Index(ctx context.Context, cfg config.HubAppConfig, opts Options) (IndexRes
 	if err := schema.Apply(ctx, db, schema.Hub); err != nil {
 		return IndexResult{}, err
 	}
+	if _, err := db.ExecContext(ctx, `PRAGMA synchronous=FULL`); err != nil {
+		return IndexResult{}, err
+	}
+	if err := recoverExpiryGroups(ctx, db, cfg); err != nil {
+		return IndexResult{}, err
+	}
+	files, scanErr := scanMirror(cfg)
 
 	result := IndexResult{Scanned: len(files)}
 	sources, invalid, metadataErrors := indexSourceDescriptors(ctx, db, cfg, now)
@@ -141,6 +152,14 @@ func Index(ctx context.Context, cfg config.HubAppConfig, opts Options) (IndexRes
 			}
 			metadataErrors = append(metadataErrors, err)
 			result.ArtifactErrors++
+			continue
+		}
+		rejected, err := rejectExpiredReplay(ctx, db, cfg, file, now)
+		if err != nil {
+			return result, err
+		}
+		if rejected {
+			result.Skipped++
 			continue
 		}
 		enriched = append(enriched, file)
@@ -199,7 +218,7 @@ func Index(ctx context.Context, cfg config.HubAppConfig, opts Options) (IndexRes
 			return result, err
 		}
 		if file.ArchivedOnly && existing.LatestArchivePath != "" {
-			if err := writeArchiveMetadata(ctx, db, sessionKey, existing.LatestArchivePath, now, "legacy_backfill_current_metadata"); err != nil {
+			if err := writeArchiveMetadata(ctx, db, sessionKey, existing.LatestArchivePath, now, "legacy_backfill_current_metadata", cfg.Retention.MinFreeBytes.Bytes); err != nil {
 				metadataErrors = append(metadataErrors, err)
 				result.ArtifactErrors++
 			}
