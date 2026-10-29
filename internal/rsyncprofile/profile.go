@@ -17,6 +17,9 @@ func SenderArgs(p Profile, sourceDir string) []string {
 
 	args := []string{
 		"-rt",
+		// The sender already selected changed generations; do not let second-resolution
+		// size/mtime quick checks suppress equal-size metadata or transcript updates.
+		"--ignore-times",
 		"--safe-links",
 		"--no-links",
 		"--no-perms",

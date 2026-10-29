@@ -19,6 +19,11 @@ home = "/home/alice"
 host_name = "sender-alpha.example.net"
 data_class = "agent_transcript"
 paths = [".claude/projects"]
+metadata = { team = "platform" }
+
+[sources.capture]
+subagent_metadata = true
+tool_results = false
 
 [[sources]]
 agent = "codex"
@@ -28,6 +33,11 @@ host_name = "sender-alpha.example.net"
 env = "sender-alpha/alice"
 data_class = "agent_transcript"
 paths = [".codex/sessions", ".codex/archived_sessions"]
+metadata = { team = "platform" }
+
+[sources.capture]
+session_index = true
+tool_results = false
 
 [exclude]
 patterns = [

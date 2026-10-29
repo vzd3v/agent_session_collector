@@ -7,20 +7,22 @@ import (
 )
 
 type File struct {
-	Agent       string
-	User        string
-	HostName    string
-	Env         string
-	SessionID   string
-	SourceKey   string
-	SourcePath  string
-	DisplayPath string
-	RemotePath  string
-	LocalPath   string
-	SizeBytes   int64
-	MtimeUnixNS int64
-	Device      uint64
-	Inode       uint64
+	Role          string
+	InlineContent []byte
+	Agent         string
+	User          string
+	HostName      string
+	Env           string
+	SessionID     string
+	SourceKey     string
+	SourcePath    string
+	DisplayPath   string
+	RemotePath    string
+	LocalPath     string
+	SizeBytes     int64
+	MtimeUnixNS   int64
+	Device        uint64
+	Inode         uint64
 }
 
 type Plan struct {
@@ -29,11 +31,12 @@ type Plan struct {
 }
 
 type Result struct {
-	Scanned  int
-	Planned  int
-	Skipped  int
-	Uploaded int
-	DryRun   bool
+	MetadataUploaded int
+	Scanned          int
+	Planned          int
+	Skipped          int
+	Uploaded         int
+	DryRun           bool
 }
 
 type UploadResult struct {

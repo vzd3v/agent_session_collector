@@ -88,6 +88,12 @@ func stageFile(stage string, file File) error {
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return fmt.Errorf("create stage dir for %s: %w", file.DisplayPath, err)
 	}
+	if file.InlineContent != nil {
+		if err := os.WriteFile(target, file.InlineContent, 0o600); err != nil {
+			return fmt.Errorf("stage source descriptor: %w", err)
+		}
+		return nil
+	}
 	if err := copyRegularFile(file, target); err != nil {
 		return fmt.Errorf("stage %s: %w", file.DisplayPath, err)
 	}

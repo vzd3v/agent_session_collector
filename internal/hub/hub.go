@@ -18,11 +18,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vzd3v/agent_session_collector/internal/artifact"
 	"github.com/vzd3v/agent_session_collector/internal/checksum"
 	"github.com/vzd3v/agent_session_collector/internal/config"
 	"github.com/vzd3v/agent_session_collector/internal/constants"
+	"github.com/vzd3v/agent_session_collector/internal/nativeid"
 	"github.com/vzd3v/agent_session_collector/internal/schema"
 	"github.com/vzd3v/agent_session_collector/internal/sessionid"
+	sourcemetadata "github.com/vzd3v/agent_session_collector/internal/source"
 	"github.com/vzd3v/agent_session_collector/internal/vlevent"
 )
 
@@ -35,39 +38,59 @@ type Options struct {
 }
 
 type IndexResult struct {
-	Scanned       int
-	Upserted      int
-	EventsEmitted int
+	Skipped        int
+	ArtifactErrors int
+	MetadataErrors int
+	Scanned        int
+	Upserted       int
+	EventsEmitted  int
 }
 
 type mirrorFile struct {
-	Sender         string
-	User           string
-	Agent          string
-	SessionID      string
-	ConversationID string
-	MirrorPath     string
-	SizeBytes      int64
-	MtimeUnixNS    int64
-	RawSHA256      string
+	RelativePath            string
+	ArtifactID              string
+	SourceID                string
+	Role                    string
+	Encoding                string
+	PhysicalSHA256          string
+	RawSizeBytes            int64
+	Descriptor              sourcemetadata.Descriptor
+	MetadataSHA256          string
+	LastEventMetadataSHA256 string
+	LastEventRawSHA256      string
+	Native                  nativeid.Projection
+	LegacyKey               string
+	ArchivedOnly            bool
+	Sender                  string
+	User                    string
+	Agent                   string
+	SessionID               string
+	ConversationID          string
+	MirrorPath              string
+	SizeBytes               int64
+	MtimeUnixNS             int64
+	RawSHA256               string
 }
 
 type existingSession struct {
-	SessionKey          string
-	FirstSeenAt         string
-	LastIndexEventAt    string
-	LastChangedAt       string
-	LatestSizeBytes     int64
-	LatestMtimeUnixNS   int64
-	LatestRawSHA256     string
-	ArchiveStatus       string
-	LatestArchivePath   string
-	LatestArchiveSHA256 string
+	LatestPhysicalSHA256 string
+	SessionKey           string
+	FirstSeenAt          string
+	LastIndexEventAt     string
+	LastChangedAt        string
+	LatestSizeBytes      int64
+	LatestMtimeUnixNS    int64
+	LatestRawSHA256      string
+	ArchiveStatus        string
+	LatestArchivePath    string
+	LatestArchiveSHA256  string
 }
 
 type pendingEvent struct {
-	sessionKey string
-	event      vlevent.AgentSessionIndex
+	sessionKey     string
+	rawSHA256      string
+	metadataSHA256 string
+	event          vlevent.AgentSessionIndex
 }
 
 func Index(ctx context.Context, cfg config.HubAppConfig, opts Options) (IndexResult, error) {
@@ -79,10 +102,7 @@ func Index(ctx context.Context, cfg config.HubAppConfig, opts Options) (IndexRes
 	if runID == "" {
 		runID = fmt.Sprintf("run-%d", now.UnixNano())
 	}
-	files, err := scanMirror(cfg)
-	if err != nil {
-		return IndexResult{}, err
-	}
+	files, scanErr := scanMirror(cfg)
 	if err := os.MkdirAll(filepath.Dir(cfg.Paths.Catalog), 0o750); err != nil {
 		return IndexResult{}, fmt.Errorf("create catalog dir: %w", err)
 	}
@@ -98,6 +118,39 @@ func Index(ctx context.Context, cfg config.HubAppConfig, opts Options) (IndexRes
 	}
 
 	result := IndexResult{Scanned: len(files)}
+	sources, invalid, metadataErrors := indexSourceDescriptors(ctx, db, cfg, now)
+	result.MetadataErrors = len(metadataErrors)
+	if scanErr != nil {
+		metadataErrors = append(metadataErrors, scanErr)
+		result.ArtifactErrors++
+	}
+	var enriched []mirrorFile
+	for _, file := range files {
+		if invalid[file.SourceID] {
+			continue
+		}
+		if descriptor, ok := sources[file.SourceID]; ok {
+			file.Descriptor = descriptor
+			body, _ := descriptor.Encode()
+			file.MetadataSHA256 = sourcemetadata.Digest(body)
+		}
+		if err := prepareArtifact(ctx, db, &file, decodedFileLimit(cfg)); err != nil {
+			if errors.Is(err, errArtifactChanged) {
+				result.Skipped++
+				continue
+			}
+			metadataErrors = append(metadataErrors, err)
+			result.ArtifactErrors++
+			continue
+		}
+		enriched = append(enriched, file)
+	}
+	archived, err := archivedOnlyArtifacts(ctx, db, cfg, sources, invalid)
+	if err != nil {
+		metadataErrors = append(metadataErrors, err)
+		result.ArtifactErrors++
+	}
+	files = append(enriched, archived...)
 	var events []pendingEvent
 	nowText := now.Format(time.RFC3339Nano)
 	for _, file := range files {
@@ -107,7 +160,8 @@ func Index(ctx context.Context, cfg config.HubAppConfig, opts Options) (IndexRes
 			return IndexResult{}, err
 		}
 		changed := mirrorChanged(file, existing, found)
-		emit := shouldEmitIndexEvent(cfg, existing.LastIndexEventAt, changed, now)
+		pendingContent := file.RawSHA256 != file.LastEventRawSHA256
+		emit := shouldEmitIndexEvent(cfg, existing.LastIndexEventAt, changed || pendingContent || file.MetadataSHA256 != file.LastEventMetadataSHA256, now)
 		if emit {
 			archiveStatus, _, _ := archiveStateForIndex(file, existing, found)
 			changedAt := existing.LastChangedAt
@@ -116,19 +170,10 @@ func Index(ctx context.Context, cfg config.HubAppConfig, opts Options) (IndexRes
 			}
 			events = append(events, pendingEvent{
 				sessionKey: sessionKey,
-				event:      buildEvent(file, runID, archiveStatus, changed, changedAt, now),
+				rawSHA256:  file.RawSHA256, metadataSHA256: file.MetadataSHA256,
+				event: buildEvent(file, runID, archiveStatus, changed || pendingContent, changedAt, now),
 			})
 		}
-	}
-	if len(events) > 0 {
-		if err := emitEvents(ctx, cfg, opts.HTTPClient, events); err != nil {
-			return IndexResult{}, err
-		}
-		result.EventsEmitted = len(events)
-	}
-	emitted := make(map[string]struct{}, len(events))
-	for _, event := range events {
-		emitted[event.sessionKey] = struct{}{}
 	}
 	for _, file := range files {
 		sessionKey := buildSessionKey(file)
@@ -141,9 +186,6 @@ func Index(ctx context.Context, cfg config.HubAppConfig, opts Options) (IndexRes
 		if found {
 			firstSeenAt = existing.FirstSeenAt
 		}
-		if _, ok := emitted[sessionKey]; ok {
-			lastIndexEventAt = nowText
-		}
 		archiveStatus, archivePath, archiveSHA256 := archiveStateForIndex(file, existing, found)
 		changedAt := existing.LastChangedAt
 		if mirrorChanged(file, existing, found) {
@@ -153,17 +195,37 @@ func Index(ctx context.Context, cfg config.HubAppConfig, opts Options) (IndexRes
 			return IndexResult{}, err
 		}
 		result.Upserted++
+		if err := storeArtifactMetadata(ctx, db, file, sessionKey); err != nil {
+			return result, err
+		}
+		if file.ArchivedOnly && existing.LatestArchivePath != "" {
+			if err := writeArchiveMetadata(ctx, db, sessionKey, existing.LatestArchivePath, now, "legacy_backfill_current_metadata"); err != nil {
+				metadataErrors = append(metadataErrors, err)
+				result.ArtifactErrors++
+			}
+		}
 	}
-	return result, nil
+	if len(events) > 0 {
+		if err := emitEvents(ctx, cfg, opts.HTTPClient, events); err != nil {
+			return result, errors.Join(append(metadataErrors, err)...)
+		}
+		for _, event := range events {
+			if _, err := db.ExecContext(ctx, `UPDATE sessions SET last_index_event_at=?,last_index_event_raw_sha256=?,last_index_event_metadata_sha256=? WHERE session_key=?`, nowText, event.rawSHA256, event.metadataSHA256, event.sessionKey); err != nil {
+				return result, err
+			}
+		}
+		result.EventsEmitted = len(events)
+	}
+	return result, errors.Join(metadataErrors...)
 }
 
 func mirrorChanged(file mirrorFile, existing existingSession, found bool) bool {
-	return !found || existing.LatestSizeBytes != file.SizeBytes ||
-		existing.LatestMtimeUnixNS != file.MtimeUnixNS || existing.LatestRawSHA256 != file.RawSHA256
+	return !found || existing.LatestRawSHA256 != file.RawSHA256
 }
 
 func scanMirror(cfg config.HubAppConfig) ([]mirrorFile, error) {
 	var files []mirrorFile
+	var problems []error
 	for _, sender := range cfg.Receive.Sender {
 		root := filepath.Join(cfg.Paths.Mirror, sender.Mirror)
 		err := filepath.WalkDir(root, func(localPath string, entry fs.DirEntry, walkErr error) error {
@@ -180,7 +242,7 @@ func scanMirror(cfg config.HubAppConfig) ([]mirrorFile, error) {
 			if err != nil {
 				return fmt.Errorf("stat mirror file %s: %w", localPath, err)
 			}
-			if !info.Mode().IsRegular() || filepath.Ext(localPath) != ".jsonl" {
+			if !info.Mode().IsRegular() {
 				return nil
 			}
 			rel, err := filepath.Rel(root, localPath)
@@ -189,7 +251,13 @@ func scanMirror(cfg config.HubAppConfig) ([]mirrorFile, error) {
 			}
 			parsed, err := parseMirrorPath(sender.SenderID, filepath.ToSlash(rel))
 			if err != nil {
+				if strings.HasPrefix(filepath.ToSlash(rel), ".asc/") {
+					return nil
+				}
 				return fmt.Errorf("parse mirror file %s: %w", localPath, err)
+			}
+			if parsed.Role == "" {
+				return nil
 			}
 			sum, err := checksum.FileSHA256(localPath)
 			if err != nil {
@@ -202,15 +270,19 @@ func scanMirror(cfg config.HubAppConfig) ([]mirrorFile, error) {
 			parsed.MirrorPath = abs
 			parsed.SizeBytes = info.Size()
 			parsed.MtimeUnixNS = info.ModTime().UnixNano()
-			parsed.RawSHA256 = sum
+			parsed.PhysicalSHA256 = sum
+			if parsed.Encoding == artifact.Plain {
+				parsed.RawSHA256 = sum
+				parsed.RawSizeBytes = info.Size()
+			}
 			files = append(files, parsed)
 			return nil
 		})
 		if err != nil {
-			return nil, err
+			problems = append(problems, err)
 		}
 	}
-	return files, nil
+	return files, errors.Join(problems...)
 }
 
 func parseMirrorPath(senderID, rel string) (mirrorFile, error) {
@@ -226,7 +298,15 @@ func parseMirrorPath(senderID, rel string) (mirrorFile, error) {
 		return mirrorFile{}, fmt.Errorf("unsupported agent %q", agent)
 	}
 	artifactPath := strings.Join(parts[2:], "/")
-	sessionID, err := sessionid.ForArtifact(agent, artifactPath)
+	role := artifact.Role(agent, artifactPath)
+	if role == "" {
+		return mirrorFile{}, nil
+	}
+	sessionID := ""
+	var err error
+	if role == artifact.Transcript {
+		sessionID, err = sessionid.ForArtifact(agent, strings.TrimSuffix(artifactPath, ".zst"))
+	}
 	if err != nil {
 		return mirrorFile{}, err
 	}
@@ -237,6 +317,9 @@ func parseMirrorPath(senderID, rel string) (mirrorFile, error) {
 		}
 	}
 	return mirrorFile{
+		RelativePath: artifactPath, Role: role, Encoding: artifact.Encoding(artifactPath),
+		SourceID:       sourcemetadata.ID(senderID, parts[0], agent),
+		ArtifactID:     sourcemetadata.ArtifactID(sourcemetadata.ID(senderID, parts[0], agent), artifactPath),
 		Sender:         senderID,
 		User:           parts[0],
 		Agent:          agent,
@@ -247,7 +330,7 @@ func parseMirrorPath(senderID, rel string) (mirrorFile, error) {
 
 func loadExistingSession(ctx context.Context, db *sql.DB, sessionKey string) (existingSession, bool, error) {
 	var existing existingSession
-	err := db.QueryRowContext(ctx, `SELECT session_key, first_seen_at, last_index_event_at, last_changed_at, latest_size_bytes, latest_mtime_unix_ns, latest_raw_sha256, archive_status, latest_archive_path, latest_archive_sha256
+	err := db.QueryRowContext(ctx, `SELECT session_key, first_seen_at, last_index_event_at, last_changed_at, latest_size_bytes, latest_mtime_unix_ns, latest_raw_sha256, archive_status, latest_archive_path, latest_archive_sha256,latest_physical_sha256
 FROM sessions WHERE session_key = ?`, sessionKey).Scan(
 		&existing.SessionKey,
 		&existing.FirstSeenAt,
@@ -259,6 +342,7 @@ FROM sessions WHERE session_key = ?`, sessionKey).Scan(
 		&existing.ArchiveStatus,
 		&existing.LatestArchivePath,
 		&existing.LatestArchiveSHA256,
+		&existing.LatestPhysicalSHA256,
 	)
 	if err == nil {
 		return existing, true, nil
@@ -272,8 +356,7 @@ FROM sessions WHERE session_key = ?`, sessionKey).Scan(
 func archiveStateForIndex(file mirrorFile, existing existingSession, found bool) (status string, archivePath string, archiveSHA256 string) {
 	if found &&
 		existing.ArchiveStatus == constants.ArchiveStatusArchived &&
-		existing.LatestSizeBytes == file.SizeBytes &&
-		existing.LatestMtimeUnixNS == file.MtimeUnixNS &&
+		(existing.LatestPhysicalSHA256 == file.PhysicalSHA256 || (existing.LatestPhysicalSHA256 == "" && existing.LatestSizeBytes == file.SizeBytes && existing.LatestMtimeUnixNS == file.MtimeUnixNS)) &&
 		existing.LatestRawSHA256 == file.RawSHA256 {
 		return existing.ArchiveStatus, existing.LatestArchivePath, existing.LatestArchiveSHA256
 	}
@@ -341,13 +424,22 @@ func shouldEmitIndexEvent(cfg config.HubAppConfig, lastIndexEventAt string, chan
 }
 
 func buildEvent(file mirrorFile, runID, archiveStatus string, changed bool, changedAt string, observedAt time.Time) vlevent.AgentSessionIndex {
+	parentSession, parentAgent := file.Native.ParentID, ""
+	if file.Agent == constants.AgentClaude {
+		parentSession = ""
+		parentAgent = file.Native.ParentID
+	}
 	return vlevent.AgentSessionIndex{
+		SchemaVersion: vlevent.IndexSchemaVersion,
+		ArtifactID:    file.ArtifactID, SourceID: file.SourceID, ArtifactRole: file.Role,
+		HostName: file.Descriptor.HostName, Env: file.Descriptor.Env,
+		AgentID: file.Native.AgentID, RootSessionID: file.Native.RootID, ParentSessionID: parentSession, ParentAgentID: parentAgent, ForkedFromID: file.Native.ForkID,
 		EventName:       "agent_session_index",
 		ServiceName:     serviceName,
 		Agent:           file.Agent,
 		SenderID:        file.Sender,
 		OSUser:          file.User,
-		SessionID:       file.SessionID,
+		SessionID:       file.Native.SessionID,
 		ConversationID:  file.ConversationID,
 		FileSizeBytes:   file.SizeBytes,
 		FileMtime:       time.Unix(0, file.MtimeUnixNS).UTC(),
@@ -361,6 +453,9 @@ func buildEvent(file mirrorFile, runID, archiveStatus string, changed bool, chan
 }
 
 func buildSessionKey(file mirrorFile) string {
+	if file.LegacyKey != "" {
+		return file.LegacyKey
+	}
 	pathHash := sha256.Sum256([]byte(file.MirrorPath))
 	return strings.Join([]string{file.Agent, file.Sender, file.User, file.SessionID, hex.EncodeToString(pathHash[:8])}, ":")
 }

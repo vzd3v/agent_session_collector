@@ -135,9 +135,9 @@ VALUES ('fixture','codex','sender-alpha','operator','fixture','fixture.jsonl',1,
 			if err := Apply(context.Background(), db, tc.target); err != nil {
 				t.Fatalf("apply existing schema: %v", err)
 			}
-			wantMigrations := 1
+			wantMigrations := 2
 			if tc.target == Hub {
-				wantMigrations = 3
+				wantMigrations = 4
 				var changedAt, indexedAt string
 				if err := db.QueryRow(`SELECT last_changed_at,last_indexed_at FROM sessions LIMIT 1`).Scan(&changedAt, &indexedAt); err != nil {
 					t.Fatal(err)

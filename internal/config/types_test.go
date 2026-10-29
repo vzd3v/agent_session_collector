@@ -19,6 +19,29 @@ func TestLoadSenderExample(t *testing.T) {
 	}
 }
 
+func TestSourceNamespaceAndCodexIndexAmbiguity(t *testing.T) {
+	cfg, err := LoadSenderFile(filepath.Join("..", "..", "examples", "sender.example.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Sources = append(cfg.Sources, cfg.Sources[0])
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("duplicate source namespace accepted")
+	}
+	s := SourceConfig{Agent: "codex", Paths: []string{".codex/sessions", ".codex/archived_sessions"}}
+	if name, err := s.IndexPath(); err != nil || name != ".codex/session_index.jsonl" {
+		t.Fatalf("single home: %q %v", name, err)
+	}
+	s.Paths = append(s.Paths, "profile/sessions")
+	if _, err := s.IndexPath(); err == nil {
+		t.Fatal("multiple Codex homes guessed")
+	}
+	s.Capture.SessionIndexPath = "selected/session_index.jsonl"
+	if name, err := s.IndexPath(); err != nil || name != s.Capture.SessionIndexPath {
+		t.Fatalf("explicit index: %q %v", name, err)
+	}
+}
+
 func TestLoadHubExample(t *testing.T) {
 	cfg, err := LoadHubFile(filepath.Join("..", "..", "examples", "hub.example.toml"))
 	if err != nil {

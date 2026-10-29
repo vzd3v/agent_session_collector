@@ -39,9 +39,9 @@ func Sync(ctx context.Context, cfg config.SenderConfig, opts Options) (Result, e
 		return Result{}, err
 	}
 	result := Result{
-		Scanned: len(files),
-		Planned: len(plan.Planned),
-		Skipped: len(plan.Skipped),
+		Scanned: artifactCount(files),
+		Planned: artifactCount(plan.Planned),
+		Skipped: artifactCount(plan.Skipped),
 		DryRun:  opts.DryRun,
 	}
 	if opts.Stdout == nil {
@@ -71,9 +71,20 @@ func Sync(ctx context.Context, cfg config.SenderConfig, opts Options) (Result, e
 	if err := store.markSynced(ctx, uploadResult.Uploaded, opts.Now()); err != nil {
 		return result, err
 	}
-	result.Uploaded = len(uploadResult.Uploaded)
-	result.Skipped += len(uploadResult.Skipped)
+	result.Uploaded = artifactCount(uploadResult.Uploaded)
+	result.MetadataUploaded = len(uploadResult.Uploaded) - result.Uploaded
+	result.Skipped += artifactCount(uploadResult.Skipped)
 	return result, nil
+}
+
+func artifactCount(files []File) int {
+	n := 0
+	for _, f := range files {
+		if f.InlineContent == nil {
+			n++
+		}
+	}
+	return n
 }
 
 func writeDryRun(w io.Writer, plan Plan) {

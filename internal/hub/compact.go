@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vzd3v/agent_session_collector/internal/artifact"
 	"github.com/vzd3v/agent_session_collector/internal/checksum"
 	"github.com/vzd3v/agent_session_collector/internal/config"
 	"github.com/vzd3v/agent_session_collector/internal/constants"
@@ -33,17 +34,20 @@ type CompactResult struct {
 }
 
 type compactSession struct {
-	SessionKey          string
-	Agent               string
-	Sender              string
-	User                string
-	SessionID           string
-	MirrorPath          string
-	LatestSizeBytes     int64
-	LatestMtimeUnixNS   int64
-	LatestRawSHA256     string
-	LatestArchivePath   string
-	LatestArchiveSHA256 string
+	SourceEncoding       string
+	LatestPhysicalSHA256 string
+	LatestRawSizeBytes   int64
+	SessionKey           string
+	Agent                string
+	Sender               string
+	User                 string
+	SessionID            string
+	MirrorPath           string
+	LatestSizeBytes      int64
+	LatestMtimeUnixNS    int64
+	LatestRawSHA256      string
+	LatestArchivePath    string
+	LatestArchiveSHA256  string
 }
 
 func Compact(ctx context.Context, cfg config.HubAppConfig, opts CompactOptions) (CompactResult, error) {
@@ -101,7 +105,7 @@ func Compact(ctx context.Context, cfg config.HubAppConfig, opts CompactOptions) 
 }
 
 func loadHotSessions(ctx context.Context, db *sql.DB) ([]compactSession, error) {
-	rows, err := db.QueryContext(ctx, `SELECT session_key, agent, sender, user, session_id, mirror_path, latest_size_bytes, latest_mtime_unix_ns, latest_raw_sha256, latest_archive_path, latest_archive_sha256
+	rows, err := db.QueryContext(ctx, `SELECT session_key, agent, sender, user, session_id, mirror_path, latest_size_bytes, latest_mtime_unix_ns, latest_raw_sha256, latest_archive_path, latest_archive_sha256,source_encoding,latest_physical_sha256,latest_raw_size_bytes
 FROM sessions WHERE archive_status = ? ORDER BY session_key`, constants.ArchiveStatusHot)
 	if err != nil {
 		return nil, fmt.Errorf("query hot sessions: %w", err)
@@ -124,6 +128,7 @@ FROM sessions WHERE archive_status = ? ORDER BY session_key`, constants.ArchiveS
 			&session.LatestRawSHA256,
 			&session.LatestArchivePath,
 			&session.LatestArchiveSHA256,
+			&session.SourceEncoding, &session.LatestPhysicalSHA256, &session.LatestRawSizeBytes,
 		); err != nil {
 			return nil, fmt.Errorf("scan hot session: %w", err)
 		}
@@ -150,7 +155,7 @@ func archiveSession(ctx context.Context, db *sql.DB, cfg config.HubAppConfig, se
 	if err != nil {
 		return false, err
 	}
-	if rawSHA256 != session.LatestRawSHA256 {
+	if rawSHA256 != physicalHash(session) {
 		return false, fmt.Errorf("mirror checksum mismatch for %s", session.MirrorPath)
 	}
 	version, err := nextArchiveVersion(ctx, db, cfg.Archive.Policy, session.SessionKey)
@@ -170,7 +175,7 @@ func archiveSession(ctx context.Context, db *sql.DB, cfg config.HubAppConfig, se
 		_ = os.Remove(tmpPath)
 		return false, fmt.Errorf("close archive temp: %w", err)
 	}
-	if err := compressZstd(ctx, cfg, session.MirrorPath, tmpPath); err != nil {
+	if err := stageArchive(ctx, cfg, session, tmpPath); err != nil {
 		_ = os.Remove(tmpPath)
 		return false, err
 	}
@@ -204,7 +209,46 @@ func archiveSession(ctx context.Context, db *sql.DB, cfg config.HubAppConfig, se
 	if err := recordArchive(ctx, db, cfg, session, version, finalPath, archiveSHA256, now); err != nil {
 		return false, err
 	}
+	if err := writeArchiveMetadata(ctx, db, session.SessionKey, finalPath, now, "archive_time"); err != nil {
+		return false, err
+	}
 	return true, nil
+}
+
+func physicalHash(session compactSession) string {
+	if session.LatestPhysicalSHA256 != "" {
+		return session.LatestPhysicalSHA256
+	}
+	return session.LatestRawSHA256
+}
+func logicalSize(session compactSession) int64 {
+	if session.SourceEncoding == artifact.Zstd {
+		return session.LatestRawSizeBytes
+	}
+	return session.LatestSizeBytes
+}
+
+func stageArchive(ctx context.Context, cfg config.HubAppConfig, session compactSession, outputPath string) error {
+	if session.SourceEncoding != artifact.Zstd {
+		return compressZstd(ctx, cfg, session.MirrorPath, outputPath)
+	}
+	output, err := os.OpenFile(outputPath, os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	copyErr := artifact.Read(ctx, session.MirrorPath, artifact.Plain, func(r io.Reader) error { _, err := io.Copy(output, r); return err })
+	closeErr := output.Close()
+	if copyErr != nil || closeErr != nil {
+		return errors.Join(copyErr, closeErr)
+	}
+	sum, err := checksum.FileSHA256(outputPath)
+	if err != nil {
+		return err
+	}
+	if sum != physicalHash(session) {
+		return fmt.Errorf("native compressed input changed during archive")
+	}
+	return nil
 }
 
 func nextArchiveVersion(ctx context.Context, db *sql.DB, policy string, sessionKey string) (int, error) {
@@ -227,6 +271,9 @@ func archivePath(cfg config.HubAppConfig, session compactSession, version int) s
 		baseName = hashShort(session.SessionKey)
 	}
 	stableName := baseName + "." + hashShort(session.SessionKey) + "." + hashShort(session.LatestRawSHA256)
+	if session.SourceEncoding == artifact.Zstd {
+		stableName += "." + hashShort(physicalHash(session))
+	}
 	switch cfg.Archive.Policy {
 	case "versioned":
 		baseName = fmt.Sprintf("%s.v%d.jsonl.zst", stableName, version)
@@ -308,7 +355,7 @@ func recordArchive(ctx context.Context, db *sql.DB, cfg config.HubAppConfig, ses
 			return fmt.Errorf("supersede archive versions: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO session_archives(session_key, version, path, raw_size_bytes, raw_mtime_unix_ns, raw_sha256, archive_sha256, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, session.SessionKey, version, archivePath, session.LatestSizeBytes, session.LatestMtimeUnixNS, session.LatestRawSHA256, archiveSHA256, nowText); err != nil {
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, session.SessionKey, version, archivePath, logicalSize(session), session.LatestMtimeUnixNS, session.LatestRawSHA256, archiveSHA256, nowText); err != nil {
 			return fmt.Errorf("insert archive version: %w", err)
 		}
 	} else {
@@ -321,7 +368,7 @@ raw_mtime_unix_ns = excluded.raw_mtime_unix_ns,
 raw_sha256 = excluded.raw_sha256,
 archive_sha256 = excluded.archive_sha256,
 created_at = excluded.created_at,
-superseded_at = ''`, session.SessionKey, archivePath, session.LatestSizeBytes, session.LatestMtimeUnixNS, session.LatestRawSHA256, archiveSHA256, nowText); err != nil {
+superseded_at = ''`, session.SessionKey, archivePath, logicalSize(session), session.LatestMtimeUnixNS, session.LatestRawSHA256, archiveSHA256, nowText); err != nil {
 			return fmt.Errorf("upsert replace archive: %w", err)
 		}
 	}
@@ -387,7 +434,7 @@ func mirrorPathMatchesCatalog(session compactSession, candidatePath string) (boo
 	if err != nil {
 		return false, err
 	}
-	return rawSHA256 == session.LatestRawSHA256, nil
+	return rawSHA256 == physicalHash(session), nil
 }
 
 func moveMirrorForDeletion(mirrorPath string) (string, bool, error) {
@@ -490,7 +537,7 @@ func deleteRetainedArchivedMirrors(ctx context.Context, db *sql.DB, cfg config.H
 	if !cfg.Retention.DeleteMirrorAfterArchive {
 		return 0, nil
 	}
-	rows, err := db.QueryContext(ctx, `SELECT s.session_key, s.agent, s.sender, s.user, s.session_id, s.mirror_path, s.latest_size_bytes, s.latest_mtime_unix_ns, s.latest_raw_sha256, s.latest_archive_path, s.latest_archive_sha256, a.created_at
+	rows, err := db.QueryContext(ctx, `SELECT s.session_key, s.agent, s.sender, s.user, s.session_id, s.mirror_path, s.latest_size_bytes, s.latest_mtime_unix_ns, s.latest_raw_sha256, s.latest_archive_path, s.latest_archive_sha256, a.created_at,s.source_encoding,s.latest_physical_sha256,s.latest_raw_size_bytes
 FROM sessions s
 JOIN session_archives a ON a.session_key = s.session_key AND a.path = s.latest_archive_path
 WHERE s.archive_status = ?`, constants.ArchiveStatusArchived)
@@ -517,6 +564,7 @@ WHERE s.archive_status = ?`, constants.ArchiveStatusArchived)
 			&session.LatestArchivePath,
 			&session.LatestArchiveSHA256,
 			&createdAtText,
+			&session.SourceEncoding, &session.LatestPhysicalSHA256, &session.LatestRawSizeBytes,
 		); err != nil {
 			return deleted, fmt.Errorf("scan archived mirror for deletion: %w", err)
 		}

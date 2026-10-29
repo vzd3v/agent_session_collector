@@ -26,7 +26,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return cli.RunSkeleton(stdout, stderr, args, cli.Skeleton{
 		Name:     "asc-sender",
 		Version:  version,
-		Summary:  "Scan configured transcript paths and upload changed JSONL files to a hub over rsync/SSH.",
+		Summary:  "Upload changed agent artifacts and source metadata to a hub over rsync/SSH.",
 		Usage:    "asc-sender <command>",
 		Commands: []string{"sync", "version"},
 		Examples: []string{
@@ -65,7 +65,7 @@ func runSync(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if !*dryRun {
-		_, _ = fmt.Fprintf(stdout, "sync scanned=%d planned=%d skipped=%d uploaded=%d\n", result.Scanned, result.Planned, result.Skipped, result.Uploaded)
+		_, _ = fmt.Fprintf(stdout, "sync scanned=%d planned=%d skipped=%d uploaded=%d metadata_uploaded=%d\n", result.Scanned, result.Planned, result.Skipped, result.Uploaded, result.MetadataUploaded)
 	}
 	return 0
 }

@@ -1,5 +1,12 @@
 # Deployment
 
+Upgrade hub binaries before senders when enabling source descriptors or companion
+capture. The hub applies additive catalog migration 004 and sender state migration
+002 is applied by the sender. Back up SQLite catalogs/state and archives before
+upgrading. Existing keys and archive payloads are preserved; archived identity
+backfill streams existing verified archives when needed. Keep archive
+`.metadata.json` sidecars with payloads when copying or exporting the archive.
+
 This guide describes a minimal Linux deployment with one central hub and one or
 more sender hosts.
 

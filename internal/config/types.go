@@ -14,6 +14,7 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/vzd3v/agent_session_collector/internal/constants"
 	"github.com/vzd3v/agent_session_collector/internal/pathnorm"
+	sourcemetadata "github.com/vzd3v/agent_session_collector/internal/source"
 )
 
 type Duration struct {
@@ -106,14 +107,25 @@ type SyncConfig struct {
 }
 
 type SourceConfig struct {
-	Agent     string   `toml:"agent"`
-	User      string   `toml:"user"`
-	Home      string   `toml:"home"`
-	HostName  string   `toml:"host_name"`
-	Env       string   `toml:"env"`
-	DataClass string   `toml:"data_class"`
-	Paths     []string `toml:"paths"`
+	Agent     string            `toml:"agent"`
+	User      string            `toml:"user"`
+	Home      string            `toml:"home"`
+	HostName  string            `toml:"host_name"`
+	Env       string            `toml:"env"`
+	DataClass string            `toml:"data_class"`
+	Paths     []string          `toml:"paths"`
+	Metadata  map[string]string `toml:"metadata"`
+	Capture   CaptureConfig     `toml:"capture"`
 }
+
+type CaptureConfig struct {
+	SubagentMetadata *bool  `toml:"subagent_metadata"`
+	SessionIndex     *bool  `toml:"session_index"`
+	ToolResults      bool   `toml:"tool_results"`
+	SessionIndexPath string `toml:"session_index_path"`
+}
+
+func EnabledByDefault(value *bool) bool { return value == nil || *value }
 
 type ExcludeConfig struct {
 	Patterns []string `toml:"patterns"`
@@ -164,6 +176,7 @@ type DataClass struct {
 }
 
 type IndexConfig struct {
+	MaxDecodedFileSize   ByteSize `toml:"max_decoded_file_size"`
 	Interval             Duration `toml:"interval"`
 	EmitVLEvents         bool     `toml:"emit_vl_events"`
 	VLEndpoint           string   `toml:"vl_endpoint"`
@@ -236,7 +249,13 @@ func (cfg SenderConfig) Validate() error {
 	if len(cfg.Sources) == 0 {
 		return fmt.Errorf("at least one source is required")
 	}
+	seenSources := map[string]bool{}
 	for i, source := range cfg.Sources {
+		key := source.User + "\x00" + source.Agent
+		if seenSources[key] {
+			return fmt.Errorf("ambiguous duplicate source for user %q agent %q", source.User, source.Agent)
+		}
+		seenSources[key] = true
 		if err := source.Validate(); err != nil {
 			return fmt.Errorf("sources[%d]: %w", i, err)
 		}
@@ -245,6 +264,12 @@ func (cfg SenderConfig) Validate() error {
 }
 
 func (source SourceConfig) Validate() error {
+	if err := sourcemetadata.ValidateSegment(source.User); err != nil {
+		return err
+	}
+	if err := sourcemetadata.ValidateMetadata(source.Metadata); err != nil {
+		return err
+	}
 	switch source.Agent {
 	case constants.AgentClaude, constants.AgentCodex:
 	default:
@@ -274,7 +299,37 @@ func (source SourceConfig) Validate() error {
 			return fmt.Errorf("paths[%d]: %w", i, err)
 		}
 	}
+	if _, err := source.IndexPath(); err != nil {
+		return err
+	}
 	return nil
+}
+
+// IndexPath resolves one Codex-home global index, without guessing from unrelated paths.
+func (s SourceConfig) IndexPath() (string, error) {
+	if s.Capture.SessionIndexPath != "" {
+		if s.Agent != constants.AgentCodex || filepath.Base(strings.TrimSuffix(s.Capture.SessionIndexPath, ".zst")) != "session_index.jsonl" {
+			return "", fmt.Errorf("session_index_path must name a Codex session_index.jsonl artifact")
+		}
+		return pathnorm.Relative(s.Capture.SessionIndexPath)
+	}
+	if s.Agent != constants.AgentCodex || !EnabledByDefault(s.Capture.SessionIndex) {
+		return "", nil
+	}
+	roots := map[string]bool{}
+	for _, p := range s.Paths {
+		base := filepath.Base(p)
+		if base == "sessions" || base == "archived_sessions" {
+			roots[filepath.Dir(p)] = true
+		}
+	}
+	if len(roots) > 1 {
+		return "", fmt.Errorf("codex source has multiple homes; configure one home per account/agent")
+	}
+	for root := range roots {
+		return filepath.ToSlash(filepath.Join(root, "session_index.jsonl")), nil
+	}
+	return "", nil
 }
 
 func (cfg HubAppConfig) Validate() error {

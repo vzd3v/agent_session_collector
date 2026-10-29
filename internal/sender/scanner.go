@@ -9,9 +9,11 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/vzd3v/agent_session_collector/internal/artifact"
 	"github.com/vzd3v/agent_session_collector/internal/config"
 	"github.com/vzd3v/agent_session_collector/internal/pathnorm"
 	"github.com/vzd3v/agent_session_collector/internal/sessionid"
+	sourcemetadata "github.com/vzd3v/agent_session_collector/internal/source"
 )
 
 func Scan(cfg config.SenderConfig) ([]File, error) {
@@ -20,9 +22,18 @@ func Scan(cfg config.SenderConfig) ([]File, error) {
 		return nil, err
 	}
 	var files []File
+	seen := map[string]bool{}
 	for _, source := range cfg.Sources {
 		home := filepath.Clean(source.Home)
-		for _, configuredPath := range source.Paths {
+		paths := append([]string(nil), source.Paths...)
+		indexPath, err := source.IndexPath()
+		if err != nil {
+			return nil, err
+		}
+		if indexPath != "" && config.EnabledByDefault(source.Capture.SessionIndex) {
+			paths = append(paths, indexPath)
+		}
+		for _, configuredPath := range paths {
 			sourceRel, err := pathnorm.Relative(configuredPath)
 			if err != nil {
 				return nil, fmt.Errorf("normalize source path %q: %w", configuredPath, err)
@@ -57,14 +68,23 @@ func Scan(cfg config.SenderConfig) ([]File, error) {
 				if err != nil {
 					return fmt.Errorf("stat %s: %w", localPath, err)
 				}
-				if !info.Mode().IsRegular() || path.Ext(relHome) != ".jsonl" {
+				role := artifact.Role(source.Agent, relHome)
+				if !info.Mode().IsRegular() || role == "" || (role == artifact.ToolResult && !source.Capture.ToolResults) || (role == artifact.SubagentMetadata && !config.EnabledByDefault(source.Capture.SubagentMetadata)) || (role == artifact.SessionNameIndex && !config.EnabledByDefault(source.Capture.SessionIndex)) {
 					return nil
 				}
+				seenKey := source.User + "\x00" + source.Agent + "\x00" + localPath
+				if seen[seenKey] {
+					return nil
+				}
+				seen[seenKey] = true
 				stat, ok := info.Sys().(*syscall.Stat_t)
 				if !ok {
 					return fmt.Errorf("stat metadata unavailable for %s", localPath)
 				}
-				id, err := sessionid.ForArtifact(source.Agent, relHome)
+				id := ""
+				if role == artifact.Transcript {
+					id, err = sessionid.ForArtifact(source.Agent, strings.TrimSuffix(relHome, ".zst"))
+				}
 				if err != nil {
 					return fmt.Errorf("extract session id from %s: %w", relHome, err)
 				}
@@ -77,6 +97,7 @@ func Scan(cfg config.SenderConfig) ([]File, error) {
 					return fmt.Errorf("build remote path for %s: %w", relHome, err)
 				}
 				files = append(files, File{
+					Role:        role,
 					Agent:       source.Agent,
 					User:        source.User,
 					HostName:    source.HostName,
@@ -98,6 +119,13 @@ func Scan(cfg config.SenderConfig) ([]File, error) {
 				return nil, err
 			}
 		}
+		descriptor := sourcemetadata.Descriptor{Version: sourcemetadata.Version, Sender: cfg.SenderID, User: source.User, Agent: source.Agent, HostName: source.HostName, Env: source.Env, DataClass: source.DataClass, Metadata: source.Metadata}
+		body, err := descriptor.Encode()
+		if err != nil {
+			return nil, fmt.Errorf("encode source descriptor: %w", err)
+		}
+		remote := sourcemetadata.DescriptorPath(source.User, source.Agent)
+		files = append(files, File{Role: artifact.SourceDescriptor, InlineContent: body, Agent: source.Agent, User: source.User, SourceKey: "descriptor:" + remote, SourcePath: remote, DisplayPath: remote, RemotePath: remote, SizeBytes: int64(len(body))})
 	}
 	return files, nil
 }

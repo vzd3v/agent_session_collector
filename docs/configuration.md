@@ -42,6 +42,26 @@ Top-level:
 - `env`: optional environment label, useful for Codex telemetry matching.
 - `data_class`: named data class. The hub must allow this class.
 - `paths`: relative transcript directories under `home`.
+- `metadata`: optional bounded string map, for example `{ team = "platform" }`.
+  Labels are retained in the catalog and archive snapshots. Do not put secrets in
+  them. Duplicate `(user, agent)` source blocks are rejected.
+
+`[sources.capture]` belongs to the immediately preceding source:
+
+- `subagent_metadata`: default `true`; capture recognized Claude subagent
+  `agent-*.meta.json` companions within configured paths.
+- `session_index`: default `true`; capture the Codex global `session_index.jsonl`
+  beside a single configured `sessions`/`archived_sessions` home. It is a name
+  index artifact, not a conversation. Multiple inferred homes are rejected.
+- `session_index_path`: optional explicit home-relative global index path when
+  inference is unsuitable. Use the native `session_index.jsonl` basename.
+- `tool_results`: default `false`; include files under `tool-results` directories
+  reached through configured paths. Enabling it can materially increase raw data.
+
+Regular `.jsonl` and native `.jsonl.zst` transcripts are collected without
+requiring known record types or filenames. Excludes also apply to companions.
+Source descriptors transfer automatically, including label-only updates; they
+are not included in artifact upload counts (`metadata_uploaded` is separate).
 
 `[exclude]`:
 
@@ -97,6 +117,10 @@ must live under `root`.
 - `emit_vl_events`: emit `agent_session_index` JSON Lines to an HTTP endpoint.
 - `vl_endpoint`: HTTP endpoint used when event emission is enabled.
 - `emit_on_unchanged_every`: heartbeat interval for unchanged sessions.
+- `max_decoded_file_size`: logical-byte limit for streaming identity projection,
+  including native compressed input. Defaults to `receive.max_file_size` (2 GiB
+  if unset). Corrupt or oversized input reports an artifact error while healthy
+  artifacts continue; captured mirror bytes remain available for investigation.
 
 The event endpoint is intentionally generic JSON Lines over HTTP. VictoriaLogs
 is one compatible receiver; any endpoint accepting newline-delimited JSON can be

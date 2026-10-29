@@ -24,7 +24,7 @@ func TestIndexCatalogRowsForClaudeAndCodex(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := testHubConfig(tmp)
 	writeMirrorFile(t, cfg, "operator/claude/projects/synthetic-project/claude-session-0001.jsonl", "claude\n")
-	writeMirrorFile(t, cfg, "operator/codex/sessions/2026/07/07/rollout-2026-07-07T18-00-00-00000000-0000-4000-8000-000000000001.jsonl", "codex\n")
+	writeMirrorFile(t, cfg, "operator/codex/sessions/2026/07/07/rollout-2026-07-07T18-00-00-00000000-0000-4000-8000-000000000001.jsonl", codexHeader("00000000-0000-4000-8000-000000000001"))
 
 	result, err := Index(context.Background(), cfg, Options{
 		Now:   func() time.Time { return time.Date(2026, 7, 7, 18, 0, 0, 0, time.UTC) },
@@ -118,7 +118,7 @@ func TestIndexBackfillsCodexConversationIDOnExistingRow(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := testHubConfig(tmp)
 	const sessionID = "00000000-0000-4000-8000-000000000001"
-	writeMirrorFile(t, cfg, "operator/codex/sessions/2026/07/07/rollout-2026-07-07T18-00-00-"+sessionID+".jsonl", "codex\n")
+	writeMirrorFile(t, cfg, "operator/codex/sessions/2026/07/07/rollout-2026-07-07T18-00-00-"+sessionID+".jsonl", codexHeader(sessionID))
 
 	now := time.Date(2026, 7, 7, 18, 0, 0, 0, time.UTC)
 	if _, err := Index(context.Background(), cfg, Options{Now: func() time.Time { return now }}); err != nil {
@@ -168,7 +168,7 @@ func TestIndexEmitsVLForChangedAndHeartbeatOnly(t *testing.T) {
 				http.Error(w, "unexpected sync status", http.StatusInternalServerError)
 				return
 			}
-			if event.SessionID == "" || event.SenderID == "" || event.FileSizeBytes == 0 || event.CollectorRunID == "" {
+			if event.ArtifactID == "" || event.SourceID == "" || event.SenderID == "" || event.FileSizeBytes == 0 || event.CollectorRunID == "" {
 				http.Error(w, "event missing required fields", http.StatusInternalServerError)
 				return
 			}
@@ -183,7 +183,7 @@ func TestIndexEmitsVLForChangedAndHeartbeatOnly(t *testing.T) {
 	cfg.Index.EmitVLEvents = true
 	cfg.Index.VLEndpoint = server.URL
 	cfg.Index.EmitOnUnchangedEvery = config.Duration{Duration: 24 * time.Hour}
-	mirrorPath := writeMirrorFile(t, cfg, "operator/codex/sessions/2026/07/07/rollout-2026-07-07T18-00-00-00000000-0000-4000-8000-000000000001.jsonl", "codex\n")
+	mirrorPath := writeMirrorFile(t, cfg, "operator/codex/sessions/2026/07/07/rollout-2026-07-07T18-00-00-00000000-0000-4000-8000-000000000001.jsonl", codexHeader("00000000-0000-4000-8000-000000000001"))
 
 	now := time.Date(2026, 7, 7, 18, 0, 0, 0, time.UTC)
 	setFileMtime(t, mirrorPath, now.Add(-25*time.Hour))

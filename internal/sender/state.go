@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/vzd3v/agent_session_collector/internal/schema"
+	"github.com/vzd3v/agent_session_collector/internal/source"
 )
 
 type stateStore struct {
@@ -103,6 +104,13 @@ func (s *stateStore) markSynced(ctx context.Context, files []File, now time.Time
 		return fmt.Errorf("begin sender state update: %w", err)
 	}
 	for _, file := range files {
+		if file.InlineContent != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO source_descriptors(source_key,sha256,last_synced_at) VALUES(?,?,?) ON CONFLICT(source_key) DO UPDATE SET sha256=excluded.sha256,last_synced_at=excluded.last_synced_at`, file.SourceKey, source.Digest(file.InlineContent), now.UTC().Format(time.RFC3339Nano)); err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("store source descriptor state: %w", err)
+			}
+			continue
+		}
 		if _, err := tx.ExecContext(ctx, `
 INSERT INTO synced_files (
   source_key, agent, user, source_path, session_id,
@@ -141,6 +149,25 @@ func planUploads(ctx context.Context, store *stateStore, files []File) (Plan, er
 	for _, file := range files {
 		if store == nil {
 			plan.Planned = append(plan.Planned, file)
+			continue
+		}
+		if file.InlineContent != nil {
+			exists, err := tableExists(ctx, store.db, "source_descriptors")
+			if err != nil {
+				return Plan{}, err
+			}
+			hash := ""
+			if exists {
+				err = store.db.QueryRowContext(ctx, `SELECT sha256 FROM source_descriptors WHERE source_key=?`, file.SourceKey).Scan(&hash)
+				if err != nil && err != sql.ErrNoRows {
+					return Plan{}, fmt.Errorf("query source descriptor: %w", err)
+				}
+			}
+			if hash == source.Digest(file.InlineContent) {
+				plan.Skipped = append(plan.Skipped, file)
+			} else {
+				plan.Planned = append(plan.Planned, file)
+			}
 			continue
 		}
 		state, found, err := store.get(ctx, file.SourceKey)

@@ -52,6 +52,46 @@ func TestSyncSkipsUnchangedAfterSuccessfulUpload(t *testing.T) {
 	}
 }
 
+func TestLabelOnlySyncAndDefaultCompanionCapture(t *testing.T) {
+	cfg := testConfig(t)
+	home := cfg.Sources[0].Home
+	const root = "00000000-0000-4000-8000-000000000001"
+	base := filepath.Join(home, ".claude/projects/project", root)
+	writeFile(t, filepath.Join(base, "subagents/agent-worker.meta.json"), `{"agentType":"Explore"}`)
+	writeFile(t, filepath.Join(base, "subagents/agent-worker.jsonl"), "{}\n")
+	writeFile(t, filepath.Join(base, "tool-results/result.txt"), "synthetic tool output")
+	cfg.Sources = append(cfg.Sources, config.SourceConfig{Agent: "codex", User: "operator", Home: home, HostName: "sender.example.net", DataClass: "internal_agent_transcript", Paths: []string{".codex/sessions", ".codex/archived_sessions"}})
+	writeFile(t, filepath.Join(home, ".codex/session_index.jsonl"), "{}\n")
+	files, err := sender.Scan(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := displayPaths(files)
+	if len(paths) != 3 || slices.ContainsFunc(paths, func(p string) bool { return strings.Contains(p, "tool-results") }) {
+		t.Fatalf("default companion paths: %#v", paths)
+	}
+	uploader := &fakeUploader{}
+	first, err := sender.Sync(context.Background(), cfg, sender.Options{Uploader: uploader, Sleeper: noSleep})
+	if err != nil || first.Uploaded != 3 || first.MetadataUploaded != 2 {
+		t.Fatalf("first sync: %#v %v", first, err)
+	}
+	cfg.Sources[0].Metadata = map[string]string{"team": "one"}
+	second, err := sender.Sync(context.Background(), cfg, sender.Options{Uploader: uploader, Sleeper: noSleep})
+	if err != nil || second.Uploaded != 0 || second.MetadataUploaded != 1 || second.Skipped != 3 {
+		t.Fatalf("metadata-only delivery: %#v %v", second, err)
+	}
+	cfg.Sources[0].Metadata["team"] = "two" // Equal length must not hit the file-size/mtime skip path.
+	third, err := sender.Sync(context.Background(), cfg, sender.Options{Uploader: uploader, Sleeper: noSleep})
+	if err != nil || third.Uploaded != 0 || third.MetadataUploaded != 1 {
+		t.Fatalf("equal-sized metadata update: %#v %v", third, err)
+	}
+	cfg.Sources[0].Capture.ToolResults = true
+	fourth, err := sender.Sync(context.Background(), cfg, sender.Options{Uploader: uploader, Sleeper: noSleep})
+	if err != nil || fourth.Uploaded != 1 {
+		t.Fatalf("optional tool results: %#v %v", fourth, err)
+	}
+}
+
 func TestSyncUnknownCodexNameDoesNotBlockOtherSources(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Sources = append(cfg.Sources, config.SourceConfig{
@@ -163,6 +203,9 @@ func TestScanExtractsClaudeAndCodexSessionIDs(t *testing.T) {
 	}
 	got := map[string]string{}
 	for _, file := range files {
+		if file.InlineContent != nil {
+			continue
+		}
 		got[file.Agent] = file.SessionID
 	}
 	if got[constants.AgentClaude] != "claude-session-0001" {
@@ -321,8 +364,8 @@ func TestFixtureScanReportsPeakRSS(t *testing.T) {
 		t.Fatalf("getrusage: %v", err)
 	}
 	t.Logf("fixture_scan_peak_rss_kb=%d files=%d", usage.Maxrss, len(files))
-	if len(files) != 4 {
-		t.Fatalf("fixture files=%d, want 4", len(files))
+	if len(files) != 6 {
+		t.Fatalf("fixture files=%d, want 4 artifacts and 2 descriptors", len(files))
 	}
 }
 
@@ -544,6 +587,9 @@ func writeFile(t *testing.T, path, body string) {
 func displayPaths(files []sender.File) []string {
 	out := make([]string, 0, len(files))
 	for _, file := range files {
+		if file.InlineContent != nil {
+			continue
+		}
 		out = append(out, file.DisplayPath)
 	}
 	slices.Sort(out)

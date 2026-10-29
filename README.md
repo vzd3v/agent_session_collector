@@ -11,7 +11,8 @@ no sender daemon, no resident hub process, and no database server.
 
 ## What It Does
 
-- Scans configured Claude and Codex JSONL transcript directories.
+- Scans Claude/Codex `.jsonl` and native `.jsonl.zst` artifacts, with default
+  subagent metadata/global name-index capture and optional tool-result files.
 - Uploads changed files to a hub with rsync over SSH.
 - Restricts hub-side rsync through an `asc-receive` forced command.
 - Maintains a SQLite catalog of sessions and archive state.
@@ -106,17 +107,18 @@ Durations use Go syntax such as `10m`, `24h`, and `0`. Byte sizes accept `B`,
 
 ## Session Identity
 
-The collector extracts session identity from transcript paths:
+Every artifact has a portable ID derived from its sender/user/agent source and
+relative path. Native session, agent, root, parent and fork IDs are separate,
+evidence-based fields. Codex inherited history is not assigned to the first
+header blindly; ambiguous ownership stays unresolved. Claude root-directory
+evidence does not imply a direct parent. Unknown records and filenames remain
+collectable.
 
-- Claude: session ID from the JSONL filename under `.claude/projects`.
-- Codex: conversation UUID from `rollout-...-<uuid>.jsonl`.
-
-Unknown JSONL names are still collected under opaque artifact IDs. They do not
-claim a vendor conversation ID and cannot block unrelated transcript delivery.
-
-For Codex, the hub emits `conversation.id` equal to `session.id`, matching
-Codex OTEL conventions for recognized names. Catalog indexing time and captured
-artifact change time are separate; a heartbeat is not new delivery. See
+Source descriptors preserve configured hostname, user, environment, data class
+and bounded custom labels, including label-only updates for archived artifacts.
+Version-2 index events always carry artifact/source IDs and omit unresolved
+native session IDs. Content age changes only with the logical hash; a heartbeat
+or label edit is not new content. See
 [docs/dev/data-contracts.md](docs/dev/data-contracts.md).
 
 ## Archive Behavior

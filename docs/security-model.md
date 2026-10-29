@@ -10,8 +10,18 @@ output. Deploy it only on infrastructure that is allowed to store that data.
 - The hub is trusted to store raw transcript mirrors, compressed archives, and
   session-index metadata.
 - The collector does not redact or classify transcript content.
+- Source hostname, user, environment and custom labels are assertions by the
+  authenticated sender. Descriptor validation binds sender/path identity and
+  checks the hub's declared data-class policy during indexing; it does not inspect
+  content or prevent raw bytes arriving before indexing. Treat a sender as trusted
+  for all data it can write into its own mirror.
 - A log endpoint configured through `index.vl_endpoint` receives session-index
   metadata, not raw transcript bodies.
+
+Claude subagent metadata and the Codex name index are captured by default.
+Tool-result companions require explicit `sources.capture.tool_results = true`.
+Both companions and archive metadata sidecars belong inside the raw-data trust
+boundary; names, paths and custom labels can themselves be sensitive.
 
 ## Receive Isolation
 
