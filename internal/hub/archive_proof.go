@@ -39,6 +39,9 @@ func repairCurrentArchiveMetadata(ctx context.Context, db *sql.DB, cfg config.Hu
 			continue
 		} // Unverified groups remain protected.
 		if err := writeArchiveMetadata(ctx, db, s.SessionKey, s.LatestArchivePath, now, "legacy_backfill_current_metadata", cfg.Retention.MinFreeBytes.Bytes); err != nil {
+			if errors.Is(err, errArchiveMetadataNeedsIndex) {
+				continue
+			}
 			return err
 		}
 		if err := syncArchiveSidecar(s.LatestArchivePath); err != nil {

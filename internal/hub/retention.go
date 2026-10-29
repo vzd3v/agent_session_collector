@@ -246,6 +246,9 @@ func groupProtection(cfg config.HubAppConfig, g *retentionGroup, now time.Time) 
 		return g.protected
 	}
 	for _, s := range g.sessions {
+		if s.SourceID == "" || s.ArtifactID == "" || s.RelativePath == "" {
+			return "needs_index"
+		}
 		if s.anchor.IsZero() || s.anchor.After(now) {
 			return "unknown_content_clock"
 		}

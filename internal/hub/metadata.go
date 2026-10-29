@@ -352,13 +352,29 @@ func storeArtifactMetadata(ctx context.Context, db *sql.DB, file mirrorFile, key
 	return err
 }
 
+var errArchiveMetadataNeedsIndex = errors.New("archive metadata needs indexed identity; run asc-hub index first")
+
 // Archive sidecars are portable snapshots, separate from mutable current-source labels.
 func writeArchiveMetadata(ctx context.Context, db *sql.DB, key, archivePath string, now time.Time, provenance string, minFree ...int64) error {
+	name := archivePath + ".metadata.json"
+	if info, err := os.Lstat(name); err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("archive metadata snapshot is not regular")
+		}
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
 	var sourceID, artifactID, relative, role, encoding, rawHash, physicalHash, nativeJSON, metadataJSON, host, env, class, sender, user, agent, sourceProvenance string
 	var rawSize, physicalSize int64
-	err := db.QueryRowContext(ctx, `SELECT source_id,artifact_id,relative_path,artifact_role,source_encoding,latest_raw_sha256,latest_physical_sha256,latest_raw_size_bytes,latest_size_bytes,identity_evidence_json,metadata_json,host_name,env,data_class,sender,user,agent,source_metadata_provenance FROM sessions WHERE session_key=?`, key).Scan(&sourceID, &artifactID, &relative, &role, &encoding, &rawHash, &physicalHash, &rawSize, &physicalSize, &nativeJSON, &metadataJSON, &host, &env, &class, &sender, &user, &agent, &sourceProvenance)
+	var projectionVersion int
+	var projectionHash string
+	err := db.QueryRowContext(ctx, `SELECT source_id,artifact_id,relative_path,artifact_role,source_encoding,latest_raw_sha256,latest_physical_sha256,latest_raw_size_bytes,latest_size_bytes,identity_evidence_json,metadata_json,host_name,env,data_class,sender,user,agent,source_metadata_provenance,projection_version,projection_raw_sha256 FROM sessions WHERE session_key=?`, key).Scan(&sourceID, &artifactID, &relative, &role, &encoding, &rawHash, &physicalHash, &rawSize, &physicalSize, &nativeJSON, &metadataJSON, &host, &env, &class, &sender, &user, &agent, &sourceProvenance, &projectionVersion, &projectionHash)
 	if err != nil {
 		return err
+	}
+	if sourceID == "" || artifactID == "" || relative == "" || projectionVersion != nativeid.Version || projectionHash != rawHash {
+		return errArchiveMetadataNeedsIndex
 	}
 	snapshot := struct {
 		Version                  int             `json:"version"`
@@ -388,15 +404,6 @@ func writeArchiveMetadata(ctx context.Context, db *sql.DB, key, archivePath stri
 		return err
 	}
 	// Existing snapshots keep their original provenance, even after source labels change.
-	name := archivePath + ".metadata.json"
-	if info, err := os.Lstat(name); err == nil {
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("archive metadata snapshot is not regular")
-		}
-		return nil
-	} else if !os.IsNotExist(err) {
-		return err
-	}
 	floor := int64(0)
 	if len(minFree) > 0 {
 		floor = minFree[0]

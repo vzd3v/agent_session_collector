@@ -118,6 +118,9 @@ creation. Existing snapshots are immutable when current source labels change.
 Compact also repairs missing verified current-generation snapshots without a
 plain mirror, before resuming backed deletions. It does not invent snapshots for
 superseded historical versions.
+Legacy rows without portable identity and a projection of the current digest
+defer publication until indexing. Compaction protects these rows rather than
+freezing empty IDs into an immutable snapshot; unresolved native IDs remain valid.
 Keep these sidecars with their archives when moving/exporting them. They are
 metadata, not complete tool-output dependencies or execution environments.
 
