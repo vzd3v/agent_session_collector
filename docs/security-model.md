@@ -57,6 +57,19 @@ keys, disabled password authentication and no other authorized keys. Do not use
 `nologin`, grant the shared hub group, or reuse these accounts for other automation.
 See [the deployment ACL recipe](deployment.md#receive-accounts).
 
+## Read API
+
+Treat read and export credentials as access to raw transcripts. Keep them
+separate from SSH receive keys and scope them to the minimum source set. Run
+the API in a read-only account with a loopback listener or a restricted Unix
+socket. Use a trusted HTTPS ingress for remote callers. Rotate or revoke
+credentials through the [token file](read-api.md#credentials).
+
+The reader uses catalog IDs, rejects symlinks beneath the configured roots,
+checks the indexed physical digest, and holds the opened descriptor until the
+response ends. Storage publishers must replace files by rename. Keep writer
+and storage access in the hub trust boundary.
+
 ## Deletion and Retention
 
 Keep `receive.allow_delete = false` unless sender-side deletion must remove hub

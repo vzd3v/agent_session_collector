@@ -33,6 +33,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return runMigrate(args[2:], stdout, stderr)
 		case "doctor":
 			return runDoctor(args[2:], stdout, stderr)
+		case "serve":
+			return runServe(args[2:], stderr)
 		}
 	}
 	return cli.RunSkeleton(stdout, stderr, args, cli.Skeleton{
@@ -40,7 +42,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		Version:  version,
 		Summary:  "Index mirrored session files, emit session-index metadata, compact quiet sessions, and run hub checks.",
 		Usage:    "asc-hub <command>",
-		Commands: []string{"index", "compact", "migrate", "doctor", "version"},
+		Commands: []string{"index", "compact", "migrate", "doctor", "serve", "version"},
 		Examples: []string{
 			"asc-hub doctor -config /etc/agent-session-collector/hub.toml",
 			"asc-hub index -config /etc/agent-session-collector/hub.toml",

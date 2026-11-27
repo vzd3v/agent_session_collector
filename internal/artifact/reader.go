@@ -26,6 +26,12 @@ func Read(ctx context.Context, name, encoding string, consume func(io.Reader) er
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("artifact is not regular")
 	}
+	return ReadFile(ctx, file, encoding, consume)
+}
+
+// ReadFile streams logical bytes from an already opened regular file.
+// The caller owns the file.
+func ReadFile(ctx context.Context, file *os.File, encoding string, consume func(io.Reader) error) error {
 	if encoding == Plain {
 		return consume(file)
 	}

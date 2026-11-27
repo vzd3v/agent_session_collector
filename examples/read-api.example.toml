@@ -1,0 +1,12 @@
+catalog = "/var/lib/agent-session-collector/catalog/sessions.sqlite"
+mirror = "/var/lib/agent-session-collector/mirror"
+archive = "/var/lib/agent-session-collector/archive"
+tokens_file = "/etc/agent-session-collector/read-tokens.json"
+
+# Configure one of listen or socket. Expose public HTTPS through an ingress.
+listen = "127.0.0.1:8765"
+# socket = "/run/agent-session-collector/read.sock"
+
+max_bytes = 536870912
+max_transfers = 4
+timeout = "2m"

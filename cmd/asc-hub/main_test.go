@@ -60,7 +60,7 @@ func TestMigrateIsQuietIdempotentAndPreviewNeedsNoTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", t.TempDir()) // Neither command invokes rsync, zstd or HTTP.
-	for _, want := range []string{"migrate applied=5\n", "migrate applied=0\n"} {
+	for _, want := range []string{"migrate applied=6\n", "migrate applied=0\n"} {
 		var stdout, stderr bytes.Buffer
 		if code := run([]string{"asc-hub", "migrate", "-config", configPath}, &stdout, &stderr); code != 0 || stdout.String() != want || stderr.Len() != 0 {
 			t.Fatalf("migrate code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())

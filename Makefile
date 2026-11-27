@@ -12,6 +12,7 @@ build:
 	$(GO) build $(GOFLAGS) $(BUILD_FLAGS) -o $(DIST_DIR)/asc-sender ./cmd/asc-sender
 	$(GO) build $(GOFLAGS) $(BUILD_FLAGS) -o $(DIST_DIR)/asc-receive ./cmd/asc-receive
 	$(GO) build $(GOFLAGS) $(BUILD_FLAGS) -o $(DIST_DIR)/asc-hub ./cmd/asc-hub
+	$(GO) build $(GOFLAGS) $(BUILD_FLAGS) -o $(DIST_DIR)/asc-mcp ./cmd/asc-mcp
 
 test:
 	$(GO) test $(GOFLAGS) ./...

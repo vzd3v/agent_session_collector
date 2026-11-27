@@ -6,8 +6,8 @@ optionally archives quiet sessions with zstd.
 
 It is built for fleets where Claude Code and OpenAI Codex CLI are used on many
 hosts and transcript files need to be available for later audit, debugging, or
-offline analysis. The default operating model is timer-driven oneshot commands:
-no sender daemon, no resident hub process, and no database server.
+offline analysis. Timer-driven oneshot commands handle collection. An optional
+read API serves sessions from the hub.
 
 ## What It Does
 
@@ -21,12 +21,13 @@ no sender daemon, no resident hub process, and no database server.
   policy.
 - Previews and applies opt-in age/space retention to complete native session
   groups, with crash-recoverable deletion intents and expired-content replay guards.
+- Optionally serves scoped transcript reads and exports through a
+  [read-only HTTP API](docs/read-api.md).
 
 ## What It Does Not Do
 
 - It does not redact transcript content.
 - It does not analyze prompts, tool output, or model responses.
-- It does not expose an API or UI.
 - It does not require Python, Postgres, Redis, or a queue.
 
 Transcripts can contain credentials, source code, customer data, and personal
@@ -39,11 +40,12 @@ data. Treat the hub as sensitive infrastructure. See
 | --- | --- | --- |
 | `asc-sender` | sender hosts | Scan transcript files, skip unchanged files, upload changed snapshots with rsync. |
 | `asc-receive` | hub host | SSH forced-command wrapper that validates sender identity and rsync server mode. |
-| `asc-hub` | hub host | Migrate/index the catalog, emit session-index events, compact files, preview/apply retention, run checks. |
+| `asc-hub` | hub host | Index and compact captures, manage retention, and optionally serve the read API. |
+| `asc-mcp` | MCP client host | Expose session search and paged transcript reads over stdio. |
 
 ## Requirements
 
-- Go 1.27.3 or newer to build.
+- Go 1.27.4 or newer to build.
 - `rsync` on sender and hub hosts.
 - `zstd` on the hub for native compressed input or archive compaction.
 - SSH access from each sender to its dedicated hub receive account.
